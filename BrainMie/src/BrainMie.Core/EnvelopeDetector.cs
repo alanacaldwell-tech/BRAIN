@@ -98,12 +98,20 @@ public static class EnvelopeDetector
                                    .ToList();
             double mzStart = compPeaks[0].Mz;
 
-            // Assign integer isotope index relative to the first observed peak
-            var indexed = compPeaks.Select(p =>
-            {
-                int idx = (int)Math.Round((p.Mz - mzStart) / delta);
-                return (p.Mz, p.Intensity, IsotopeIndex: idx);
-            }).ToList();
+            // Assign integer isotope index relative to the first observed peak.
+            // Merge any two binned peaks that round to the same index (sum intensities,
+            // intensity-weighted average m/z) so downstream dictionaries never see duplicates.
+            var indexed = compPeaks
+                .Select(p => (p.Mz, p.Intensity, IsotopeIndex: (int)Math.Round((p.Mz - mzStart) / delta)))
+                .GroupBy(p => p.IsotopeIndex)
+                .Select(g =>
+                {
+                    double totalIntensity = g.Sum(p => p.Intensity);
+                    double weightedMz     = g.Sum(p => p.Mz * p.Intensity) / totalIntensity;
+                    return (Mz: weightedMz, Intensity: totalIntensity, IsotopeIndex: g.Key);
+                })
+                .OrderBy(p => p.IsotopeIndex)
+                .ToList();
 
             int            maxIdx      = indexed.Max(p => p.IsotopeIndex);
             HashSet<int>   observedSet = indexed.Select(p => p.IsotopeIndex).ToHashSet();
