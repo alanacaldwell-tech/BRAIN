@@ -56,7 +56,8 @@ else
     Console.WriteLine();
 }
 
-string outputPath = Path.ChangeExtension(inputPath, ".corrected.csv");
+string outputPath    = Path.ChangeExtension(inputPath, ".corrected.csv");
+string unrescuedPath = Path.ChangeExtension(inputPath, ".unrescued.csv");
 
 // ---- Run pipeline -----------------------------------------------------------
 Console.WriteLine($"Input:   {inputPath}");
@@ -80,23 +81,37 @@ catch (Exception ex)
 }
 
 // ---- Write CSV output -------------------------------------------------------
-using var writer = new StreamWriter(outputPath);
-
-writer.WriteLine(
-    "Mz,Charge,Intensity,NeutralMass,IsotopicIndex,IsEstimated," +
-    "EstimatedIntensity,Uncertainty,Confidence,Hypothesis,FitRSquared,GapAtApex,Notes");
-
 static string F(double? v) => v.HasValue ? v.Value.ToString("G6") : "";
 static string S(bool    b) => b ? "true" : "false";
 static string Q(string  s) => $"\"{s.Replace("\"", "\"\"")}\"";
 
-foreach (var row in rows)
+const string CsvHeader =
+    "Mz,Charge,Intensity,NeutralMass,IsotopicIndex,IsEstimated," +
+    "EstimatedIntensity,Uncertainty,Confidence,Hypothesis,FitRSquared,GapAtApex,Notes";
+
+static void WriteRow(StreamWriter w, ProcessingRow row)
 {
-    writer.WriteLine(
+    w.WriteLine(
         $"{F(row.Mz)},{row.Charge},{F(row.Intensity)},{row.NeutralMass:G6}," +
         $"{row.IsotopicIndex},{S(row.IsEstimated)},{F(row.EstimatedIntensity)}," +
         $"{F(row.Uncertainty)},{row.Confidence:G4},{row.Hypothesis}," +
         $"{row.FitRSquared:G4},{S(row.GapAtApex)},{Q(row.Notes)}");
+}
+
+// Unrescued: observed peaks only (no estimated peaks injected)
+using (var w = new StreamWriter(unrescuedPath))
+{
+    w.WriteLine(CsvHeader);
+    foreach (var row in rows.Where(r => !r.IsEstimated))
+        WriteRow(w, row);
+}
+
+// Rescued: observed peaks + reconstructed missing peaks
+using (var w = new StreamWriter(outputPath))
+{
+    w.WriteLine(CsvHeader);
+    foreach (var row in rows)
+        WriteRow(w, row);
 }
 
 // ---- Summary ----------------------------------------------------------------
@@ -106,9 +121,9 @@ int mie       = rows.Count(r => r.Hypothesis == "mie"       && !r.IsEstimated);
 int overlap   = rows.Count(r => r.Hypothesis == "overlap"   && !r.IsEstimated);
 int ambiguous = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
 
-Console.WriteLine($"Output:  {outputPath}");
-Console.WriteLine($"Rows:    {totalRows} total  ({estimated} estimated/rescued peaks)");
-Console.WriteLine($"         {mie} MIE peaks  |  {overlap} overlap peaks  |  {ambiguous} ambiguous");
+Console.WriteLine($"Unrescued: {unrescuedPath}  ({totalRows - estimated} peaks)");
+Console.WriteLine($"Rescued:   {outputPath}  ({totalRows} peaks, {estimated} estimated)");
+Console.WriteLine($"           {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous");
 
 PauseIfInteractive();
 return 0;
