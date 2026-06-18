@@ -28,7 +28,7 @@ public static class SpectralPlotter
     {
         var clusterGroups = rows
             .GroupBy(r => (r.NeutralMass, r.Charge))
-            .Where(g => g.Any(r => r.IsEstimated))
+            .Where(g => g.Any(r => r.IsEstimated || r.IsSuppressed))
             .OrderByDescending(g => g.First(r => !r.IsEstimated).CorrectedIonCount)
             .Take(200)
             .ToList();
@@ -50,7 +50,7 @@ public static class SpectralPlotter
             html.AppendLine($"<p class='sub'>Showing {clusterGroups.Count} rescued cluster(s), " +
                             "ranked by corrected ion count. " +
                             "<span class='obs'>&#9646; Observed</span> &nbsp; " +
-                            "<span class='est'>&#9646; Reconstructed gap</span> &nbsp; " +
+                            "<span class='est'>&#9646; MIE correction (stacked)</span> &nbsp; " +
                             "<span class='theo'>--- Theoretical averagine</span></p>");
             html.AppendLine("<div class='grid'>");
             foreach (var g in clusterGroups)
@@ -88,10 +88,12 @@ public static class SpectralPlotter
             .ToList();
         var (offset, scale, _) = Classifier.FitAlignment(obsPeaks, theoretical);
 
-        // Normalisation: scale observed + estimated to [0,1] together; scale theoretical the same way
-        double maxObs = observed.Max(r => r.Intensity ?? 0);
-        double maxEst = estimated.Any() ? estimated.Max(r => r.EstimatedIntensity ?? 0) : 0;
-        double norm   = Math.Max(maxObs, maxEst);
+        // Normalisation: use the corrected top of each bar (suppressed peaks reach CorrectedIntensity,
+        // gap-estimated peaks reach EstimatedIntensity, normal peaks reach Intensity).
+        double maxObs  = observed.Max(r =>
+            r.IsSuppressed ? (r.CorrectedIntensity ?? r.Intensity ?? 0) : (r.Intensity ?? 0));
+        double maxEst  = estimated.Any() ? estimated.Max(r => r.EstimatedIntensity ?? 0) : 0;
+        double norm    = Math.Max(maxObs, maxEst);
         if (norm == 0) return "";
 
         // Helpers — SVG coordinate space
@@ -126,7 +128,7 @@ public static class SpectralPlotter
             svg.AppendLine($"<polyline points='{string.Join(" ", theoPoints)}' " +
                            "fill='none' stroke='#b0b0b0' stroke-width='1.5' stroke-dasharray='4,3'/>");
 
-        // Observed bars
+        // Blue bars: all observed peaks (suppressed or not)
         foreach (var r in observed)
         {
             double v = (r.Intensity ?? 0) / norm;
@@ -135,7 +137,19 @@ public static class SpectralPlotter
             svg.AppendLine($"<text x='{x + BarW() / 2:F1}' y='{Top + ChartH + 14}' text-anchor='middle' font-size='9' fill='#777'>{r.IsotopicIndex}</text>");
         }
 
-        // Reconstructed gap bars
+        // Orange stacked segment: suppressed peaks — draws from top of blue bar up to corrected height
+        foreach (var r in observed.Where(r => r.IsSuppressed))
+        {
+            double obsV  = (r.Intensity ?? 0) / norm;
+            double corV  = (r.CorrectedIntensity ?? r.Intensity ?? 0) / norm;
+            double delta = corV - obsV;
+            if (delta < 0.5 / ChartH) continue;  // sub-pixel, skip
+            double x = ColX(r.IsotopicIndex);
+            // Draw segment from obsV to corV (i.e. y from ValY(corV) down to ValY(obsV))
+            svg.AppendLine($"<rect x='{x:F1}' y='{ValY(corV):F1}' width='{BarW():F1}' height='{ValH(delta):F1}' fill='#ED7D31' opacity='0.9'/>");
+        }
+
+        // Orange full bars: gap-estimated peaks (drawn last so labels appear on top)
         foreach (var r in estimated)
         {
             double v = (r.EstimatedIntensity ?? 0) / norm;
@@ -149,7 +163,6 @@ public static class SpectralPlotter
             {
                 double unc  = r.Uncertainty.Value / norm;
                 double cx   = x + BarW() / 2;
-                double midY = ValY(v);
                 double topY = ValY(v + unc);
                 double botY = ValY(Math.Max(v - unc, 0));
                 svg.AppendLine($"<line x1='{cx:F1}' y1='{topY:F1}' x2='{cx:F1}' y2='{botY:F1}' stroke='#c0522a' stroke-width='1.2'/>");
