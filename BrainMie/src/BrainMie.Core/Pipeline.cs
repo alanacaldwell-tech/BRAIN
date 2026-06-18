@@ -14,17 +14,17 @@ public static class Pipeline
     /// </summary>
     /// <param name="filePath">Path to the .dmt file.</param>
     /// <param name="chargeRange">Inclusive (min, max) charge state range. Default (1, 10).</param>
-    /// <param name="binWidth">m/z bin width in Da for ion-event aggregation. Default 0.005 Da.</param>
+    /// <param name="binWidth">m/z bin width in Da for ion-event aggregation. Default 0.02 Da.</param>
     /// <param name="maxGap">Max consecutive missing isotope peaks per cluster. Default 3.</param>
-    /// <param name="ppmTolerance">m/z matching tolerance in ppm. Default 20 ppm.</param>
+    /// <param name="ppmTolerance">m/z matching tolerance in ppm. Default 10 ppm.</param>
     /// <param name="minClusterPeaks">Minimum observed peaks required to process a gap-free cluster. Default 3.</param>
     /// <param name="nPeaks">Number of theoretical isotope peaks to generate. Default 25.</param>
     public static List<ProcessingRow> ProcessDmt(
         string       filePath,
         (int Min, int Max) chargeRange   = default,
-        double       binWidth            = 0.005,
+        double       binWidth            = 0.02,
         int          maxGap              = 3,
-        double       ppmTolerance        = 20.0,
+        double       ppmTolerance        = 10.0,
         int          minClusterPeaks     = 3,
         int          nPeaks              = 25)
     {
@@ -42,7 +42,10 @@ public static class Pipeline
             if (chargeIons[0].Intensity.HasValue)
                 peaks = chargeIons.Select(i => (i.Mz, i.Intensity!.Value)).ToList();
             else
+            {
                 peaks = EnvelopeDetector.BinIons(chargeIons.Select(i => i.Mz), binWidth);
+                peaks = EnvelopeDetector.PickLocalMaxima(peaks);
+            }
 
             var clusters = EnvelopeDetector.FindClusters(
                 peaks, charge, maxGap, ppmTolerance);

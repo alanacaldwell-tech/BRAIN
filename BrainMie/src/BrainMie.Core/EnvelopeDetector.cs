@@ -31,6 +31,46 @@ public static class EnvelopeDetector
     }
 
     /// <summary>
+    /// Reduce a binned peak list to local maxima, rejecting noise bins.
+    ///
+    /// A bin qualifies as a peak if:
+    ///   1. Its intensity exceeds <paramref name="minProminenceFraction"/> × the
+    ///      spectrum maximum (with a hard floor of 2 ions), and
+    ///   2. It is strictly greater than both of its immediate list-neighbours
+    ///      (list-index adjacency on the sorted sparse bin list).
+    ///
+    /// Because the bin list is sparse, list-index adjacency is intentional: two
+    /// real isotope peaks that are far apart in m/z are not adjacent in the list
+    /// and do not interfere with each other's local-max test, even at high charge
+    /// states where isotope spacing approaches the bin width.
+    /// </summary>
+    /// <param name="bins">Sorted (by m/z) output of <see cref="BinIons"/>.</param>
+    /// <param name="minProminenceFraction">Fraction of the spectrum maximum below
+    /// which a bin is unconditionally rejected. Default 0.1 %.</param>
+    public static List<(double Mz, double Intensity)> PickLocalMaxima(
+        List<(double Mz, double Intensity)> bins,
+        double minProminenceFraction = 0.001)
+    {
+        if (bins.Count == 0) return [];
+
+        double maxIntensity = bins.Max(b => b.Intensity);
+        double threshold    = Math.Max(maxIntensity * minProminenceFraction, 2.0);
+
+        var peaks = new List<(double Mz, double Intensity)>();
+        for (int i = 0; i < bins.Count; i++)
+        {
+            if (bins[i].Intensity < threshold) continue;
+
+            double prev = i > 0              ? bins[i - 1].Intensity : 0.0;
+            double next = i < bins.Count - 1 ? bins[i + 1].Intensity : 0.0;
+
+            if (bins[i].Intensity >= prev && bins[i].Intensity > next)
+                peaks.Add(bins[i]);
+        }
+        return peaks;
+    }
+
+    /// <summary>
     /// Group (mz, intensity) peaks into isotopic clusters for a given charge state.
     /// </summary>
     /// <param name="peaks">Observed peaks sorted (or unsorted) by m/z.</param>

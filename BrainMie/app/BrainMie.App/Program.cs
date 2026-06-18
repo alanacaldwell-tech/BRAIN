@@ -13,7 +13,7 @@ int?   chargeMinOverride = null;
 int?   chargeMaxOverride = null;
 int    maxGap     = 3;
 double ppm        = 10.0;
-double binWidth   = 0.005;
+double binWidth   = 0.02;
 double massTol    = 1.0;
 
 if (args.Length >= 1)
@@ -222,7 +222,7 @@ static void PrintHelp() => Console.WriteLine("""
       --charge-max N    Override maximum charge state (default: auto-detected from file)
       --max-gap N       Max consecutive missing isotope peaks per cluster (default 3)
       --ppm N           m/z matching tolerance in ppm; Orbitrap: 5–10, Q-TOF: 10–20 (default 10)
-      --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.005)
+      --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.02)
       --mass-tol F      Neutral-mass tolerance in Da for proteoform grouping (default 1.0)
       -h, --help        Show this help
 
