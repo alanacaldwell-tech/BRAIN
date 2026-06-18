@@ -132,7 +132,13 @@ using (var w = new StreamWriter(outputPath))
 }
 
 // ---- Write proteoform summary CSV ------------------------------------------
-var proteoforms = ProteoformAggregator.Aggregate(rows, massTol);
+var allProteoforms = ProteoformAggregator.Aggregate(rows, massTol);
+
+// Noise filter: drop proteoforms below 0.5% of the largest, or 100 ions — whichever is higher.
+double maxIons       = allProteoforms.Count > 0 ? allProteoforms.Max(pf => pf.TotalCorrectedIonCount) : 0;
+double noiseFloor    = Math.Max(maxIons * 0.005, 100.0);
+var    proteoforms   = allProteoforms.Where(pf => pf.TotalCorrectedIonCount >= noiseFloor).ToList();
+int    noisyRemoved  = allProteoforms.Count - proteoforms.Count;
 
 const string PfHeader =
     "NeutralMass,ChargeStates,ClusterCount,TotalObservedIonCount,TotalCorrectedIonCount," +
@@ -159,7 +165,7 @@ int ambiguous = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
 
 Console.WriteLine($"Unrescued:    {unrescuedPath}  ({totalRows - estimated} peaks)");
 Console.WriteLine($"Rescued:      {outputPath}  ({totalRows} peaks, {estimated} estimated)");
-Console.WriteLine($"Proteoforms:  {proteoformPath}  ({proteoforms.Count} entries, {massTol} Da grouping)");
+Console.WriteLine($"Proteoforms:  {proteoformPath}  ({proteoforms.Count} entries, noise floor ≥ {noiseFloor:G3} ions, {noisyRemoved} removed)");
 Console.WriteLine($"              {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous");
 
 PauseIfInteractive();
