@@ -38,7 +38,7 @@ else
     Console.WriteLine("======================================");
     Console.WriteLine();
 
-    inputPath = Prompt("Path to .dmt file", required: true)!;
+    inputPath = PromptFilePath();
 
     string raw;
     raw = Prompt($"Minimum charge state [{chargeMin}]");
@@ -54,6 +54,16 @@ else
     if (!string.IsNullOrWhiteSpace(raw)) ppm = double.Parse(raw);
 
     Console.WriteLine();
+}
+
+// Resolve to an absolute path so the user can see exactly where we're looking.
+inputPath = Path.GetFullPath(inputPath.Trim('"').Trim());
+
+if (!File.Exists(inputPath))
+{
+    Console.Error.WriteLine($"Error: file not found: {inputPath}");
+    PauseIfInteractive();
+    return 1;
 }
 
 string outputPath    = Path.ChangeExtension(inputPath, ".corrected.csv");
@@ -129,16 +139,26 @@ PauseIfInteractive();
 return 0;
 
 // ---- Helpers ----------------------------------------------------------------
-static string? Prompt(string label, bool required = false)
+static string PromptFilePath()
 {
     while (true)
     {
-        Console.Write($"  {label}: ");
-        string? value = Console.ReadLine()?.Trim();
-        if (!required || !string.IsNullOrWhiteSpace(value))
-            return value;
-        Console.WriteLine("  (required — please enter a value)");
+        Console.Write("  Path to .dmt file: ");
+        string raw = Console.ReadLine()?.Trim().Trim('"') ?? "";
+        if (string.IsNullOrWhiteSpace(raw)) continue;
+
+        string full = Path.GetFullPath(raw);
+        if (File.Exists(full)) return full;
+
+        Console.WriteLine($"  File not found: {full}");
+        Console.WriteLine("  (tip: you can drag-and-drop the file onto this window to paste its path)");
     }
+}
+
+static string? Prompt(string label)
+{
+    Console.Write($"  {label}: ");
+    return Console.ReadLine()?.Trim();
 }
 
 static void PauseIfInteractive()
