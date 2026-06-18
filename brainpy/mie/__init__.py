@@ -14,7 +14,7 @@ Lower-level access
 """
 from .pipeline import process_dmt
 from .reader import read_ions
-from .envelope import bin_ions, find_isotopic_clusters
+from .envelope import bin_ions, find_isotopic_clusters, H_MASS
 from .averagine import averagine_composition, theoretical_envelope
 from .classifier import classify
 from .reconstructor import reconstruct
@@ -25,6 +25,7 @@ __all__ = [
     "read_ions",
     "bin_ions",
     "find_isotopic_clusters",
+    "H_MASS",
     "averagine_composition",
     "theoretical_envelope",
     "classify",

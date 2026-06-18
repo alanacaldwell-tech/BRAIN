@@ -22,7 +22,7 @@ from brainpy.mie import (
     ObservedPeak,
     IsotopicCluster,
 )
-from brainpy import PROTON
+from brainpy.mie import H_MASS
 
 ISOTOPE_SPACING = 1.003355
 
@@ -44,7 +44,7 @@ def _make_dmt(ions, tmp_dir):
 
 def _cluster_from_peaks(mz_list, charge, gap_indices=None):
     """Build an IsotopicCluster directly from a list of m/z values."""
-    neutral_mass = mz_list[0] * charge - charge * PROTON
+    neutral_mass = mz_list[0] * charge - charge * H_MASS
     peaks = [
         ObservedPeak(mz=mz, intensity=1.0, charge=charge, isotope_index=i)
         for i, mz in enumerate(mz_list)
@@ -185,7 +185,7 @@ class TestClassify:
 
         # neutral_mass from the lowest-m/z observed peak (as the pipeline does)
         first_mz = min(p.mz for p in peaks)
-        computed_mass = first_mz * charge - charge * PROTON
+        computed_mass = first_mz * charge - charge * H_MASS
 
         return IsotopicCluster(
             peaks=peaks,
@@ -221,7 +221,7 @@ class TestClassify:
         # Two consecutive gaps → note should appear
         delta = ISOTOPE_SPACING / 2
         start = 700.0
-        neutral_mass = start * 2 - 2 * PROTON
+        neutral_mass = start * 2 - 2 * H_MASS
         peaks = [
             ObservedPeak(mz=start, intensity=0.3, charge=2, isotope_index=0),
             ObservedPeak(mz=start + 3 * delta, intensity=0.3, charge=2, isotope_index=3),
@@ -256,7 +256,7 @@ class TestReconstruct:
         from brainpy.mie.peaks import ClassificationResult
         delta = ISOTOPE_SPACING / 2
         start = 600.0
-        neutral_mass = start * 2 - 2 * PROTON
+        neutral_mass = start * 2 - 2 * H_MASS
         # 5-peak cluster with middle peak (index 2) missing
         peaks = [
             ObservedPeak(mz=start + i * delta, intensity=float(3 - abs(i - 2.5)),

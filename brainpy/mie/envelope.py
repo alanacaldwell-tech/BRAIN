@@ -10,11 +10,12 @@ into two.
 from collections import defaultdict
 from typing import List, Tuple
 
-from brainpy import PROTON
-
 from .peaks import IsotopicCluster, ObservedPeak
 
 ISOTOPE_SPACING = 1.003355  # Da  (¹³C – ¹²C mass difference)
+# Atomic mass of hydrogen (proton + electron); used in the neutral-mass formula
+# neutral_mass = (Mz × charge) − (charge × H_MASS)
+H_MASS = 1.007825  # Da
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +120,7 @@ def find_isotopic_clusters(
         observed_set = {p[2] for p in indexed}
         gap_indices = sorted(set(range(max_idx + 1)) - observed_set)
 
-        # Neutral mass: mz of the lowest-m/z peak back-calculated to mass.
-        # NOTE: swap this line for the formula from branch claude/awesome-planck-25y17c
-        # once that branch is available.
-        neutral_mass = mz_start * charge - charge * PROTON
+        neutral_mass = mz_start * charge - charge * H_MASS
 
         observed_peaks = [
             ObservedPeak(
