@@ -23,6 +23,11 @@ public static class Pipeline
     /// Fraction of fitted theoretical intensity below which an observed peak is
     /// considered MIE-suppressed (present but anomalously low). Default 0.5 (50%).
     /// </param>
+    /// <param name="minFitR2">
+    /// Minimum R² of the single-species averagine fit required to keep a cluster.
+    /// Clusters below this threshold are unlikely to be single-species proteoforms.
+    /// Default 0.5.
+    /// </param>
     public static List<ProcessingRow> ProcessDmt(
         string             filePath,
         (int Min, int Max) chargeRange          = default,
@@ -31,7 +36,8 @@ public static class Pipeline
         double             ppmTolerance         = 10.0,
         int                minClusterPeaks      = 8,
         int                nPeaks               = 25,
-        double             suppressionThreshold = 0.5)
+        double             suppressionThreshold = 0.5,
+        double             minFitR2             = 0.5)
     {
         if (chargeRange == default) chargeRange = (1, 10);
 
@@ -60,7 +66,20 @@ public static class Pipeline
                 // Require minimum isotope count for all clusters, gapped or not.
                 if (cluster.Peaks.Count < minClusterPeaks) continue;
 
+                // Require complete isotope coverage within ±2 of the apex.
+                // A gap this close to the most intense peak makes correction unreliable.
+                int        apexIdx     = cluster.Peaks.MaxBy(p => p.Intensity)!.IsotopeIndex;
+                var        obsSet      = cluster.Peaks.Select(p => p.IsotopeIndex).ToHashSet();
+                bool       gapNearApex = Enumerable.Range(apexIdx - 2, 5)
+                                             .Where(i => i >= 0)
+                                             .Any(i => !obsSet.Contains(i));
+                if (gapNearApex) continue;
+
                 var classification = Classifier.Classify(cluster, nPeaks);
+
+                // Require a minimum averagine fit quality; poor fits indicate noise or
+                // multi-species overlap rather than a single proteoform.
+                if (classification.FitRSquared < minFitR2) continue;
                 var suppressed     = Classifier.DetectSuppressed(
                                          cluster, suppressionThreshold, nPeaks);
 
@@ -100,8 +119,6 @@ public static class Pipeline
                         ClusterIonCount:    clusterIonCount,
                         CorrectedIonCount:  correctedIonCount));
                 }
-
-
             }
         }
 

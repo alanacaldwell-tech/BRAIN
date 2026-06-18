@@ -24,9 +24,6 @@ public static class Classifier
     /// </summary>
     public static ClassificationResult Classify(IsotopicCluster cluster, int nPeaks = 25)
     {
-        if (cluster.GapIndices.Count == 0)
-            return new ClassificationResult("no_gap", 1.0, 1.0, false, 0);
-
         var theoretical = IsotopeDistribution.ComputeEnvelope(
             cluster.NeutralMass, cluster.Charge, nPeaks);
 
@@ -37,6 +34,9 @@ public static class Classifier
                 "Could not generate theoretical envelope for this mass/charge.");
 
         var (offset, _, r2) = FitAlignment(cluster.Peaks, theoretical);
+
+        if (cluster.GapIndices.Count == 0)
+            return new ClassificationResult("no_gap", 1.0, r2, false, 0);
         bool apexInGap      = ApexInGaps(cluster.GapIndices, theoretical, offset);
         int  nConsec        = MaxConsecutiveGaps(cluster.GapIndices);
 

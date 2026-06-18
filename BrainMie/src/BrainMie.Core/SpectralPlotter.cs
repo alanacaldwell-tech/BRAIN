@@ -148,7 +148,7 @@ public static class SpectralPlotter
         svg.AppendLine("</svg>");
 
         string label = HypoLabel(hypo);
-        string title = $"{neutralMass:F2} Da &nbsp;&nbsp; z={charge} &nbsp;&nbsp; " +
+        string title = $"centroid {neutralMass:F2} Da &nbsp;&nbsp; z={charge} &nbsp;&nbsp; " +
                        $"<span class='badge {hypo}'>{label}</span> &nbsp;&nbsp; " +
                        $"conf: {conf:F2} &nbsp;&nbsp; {ions:N0} ions";
 

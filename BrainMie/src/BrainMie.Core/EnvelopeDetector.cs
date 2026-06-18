@@ -159,7 +159,10 @@ public static class EnvelopeDetector
                                                    .Where(i => !observedSet.Contains(i))
                                                    .ToList();
 
-            double neutralMass = mzStart * charge - charge * Constants.HMass;
+            // Experimental centroid mass: intensity-weighted average m/z across all isotope peaks.
+            double totalInt    = indexed.Sum(p => p.Intensity);
+            double centroidMz  = indexed.Sum(p => p.Mz * p.Intensity) / totalInt;
+            double neutralMass = centroidMz * charge - charge * Constants.HMass;
 
             var observedPeaks = indexed
                 .Select(p => new ObservedPeak(p.Mz, p.Intensity, charge, p.IsotopeIndex))

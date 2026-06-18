@@ -15,6 +15,7 @@ int    maxGap     = 3;
 double ppm        = 10.0;
 double binWidth   = 0.02;
 double massTol    = 1.0;
+double minR2      = 0.5;
 
 if (args.Length >= 1)
 {
@@ -30,6 +31,7 @@ if (args.Length >= 1)
             case "--ppm":        ppm       = double.Parse(args[++i]); break;
             case "--bin-width":  binWidth  = double.Parse(args[++i]); break;
             case "--mass-tol":   massTol   = double.Parse(args[++i]); break;
+            case "--min-r2":     minR2     = double.Parse(args[++i]); break;
         }
     }
 }
@@ -76,7 +78,7 @@ int chargeMax = chargeMaxOverride ?? detectedMax;
 
 // ---- Run pipeline -----------------------------------------------------------
 Console.WriteLine($"Input:   {inputPath}");
-Console.WriteLine($"Charges: {chargeMin}–{chargeMax}{(chargeMinOverride is null && chargeMaxOverride is null ? " (auto)" : " (override)")}  |  max gap: {maxGap}  |  {ppm} ppm  |  mass tol: {massTol} Da");
+Console.WriteLine($"Charges: {chargeMin}–{chargeMax}{(chargeMinOverride is null && chargeMaxOverride is null ? " (auto)" : " (override)")}  |  max gap: {maxGap}  |  {ppm} ppm  |  mass tol: {massTol} Da  |  min R²: {minR2}");
 
 List<ProcessingRow> rows;
 try
@@ -86,7 +88,8 @@ try
         chargeRange:  (chargeMin, chargeMax),
         binWidth:     binWidth,
         maxGap:       maxGap,
-        ppmTolerance: ppm);
+        ppmTolerance: ppm,
+        minFitR2:     minR2);
 }
 catch (Exception ex)
 {
@@ -101,7 +104,7 @@ static string S(bool    b) => b ? "true" : "false";
 static string Q(string  s) => $"\"{s.Replace("\"", "\"\"")}\"";
 
 const string CsvHeader =
-    "Mz,Charge,Intensity,NeutralMass,IsotopicIndex,IsEstimated,IsSuppressed," +
+    "Mz,Charge,Intensity,CentroidNeutralMass,IsotopicIndex,IsEstimated,IsSuppressed," +
     "EstimatedIntensity,CorrectedIntensity,Uncertainty,Confidence,Hypothesis," +
     "FitRSquared,GapAtApex,ClusterIonCount,CorrectedIonCount,Notes";
 
@@ -134,7 +137,7 @@ var    proteoforms   = allProteoforms.Where(pf => pf.TotalCorrectedIonCount >= n
 int    noisyRemoved  = allProteoforms.Count - proteoforms.Count;
 
 const string PfHeader =
-    "NeutralMass,ChargeStates,ClusterCount,TotalObservedIonCount,TotalCorrectedIonCount," +
+    "CentroidNeutralMass,ChargeStates,ClusterCount,TotalObservedIonCount,TotalCorrectedIonCount," +
     "Hypothesis,MaxConfidence";
 
 using (var w = new StreamWriter(proteoformPath))
@@ -215,6 +218,7 @@ static void PrintHelp() => Console.WriteLine("""
       --ppm N           m/z matching tolerance in ppm; Orbitrap: 5–10, Q-TOF: 10–20 (default 10)
       --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.02)
       --mass-tol F      Neutral-mass tolerance in Da for proteoform grouping (default 1.0)
+      --min-r2 F        Minimum averagine fit R² to keep a cluster (default 0.5)
       -h, --help        Show this help
 
     Output files written next to the input:
