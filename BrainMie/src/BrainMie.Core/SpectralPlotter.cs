@@ -28,8 +28,8 @@ public static class SpectralPlotter
     {
         var clusterGroups = rows
             .GroupBy(r => (r.NeutralMass, r.Charge))
-            .Where(g => g.Any(r => r.IsEstimated || r.IsSuppressed))
-            .OrderByDescending(g => g.First(r => !r.IsEstimated).CorrectedIonCount)
+            .Where(g => g.Any(r => r.IsSuppressed))
+            .OrderByDescending(g => g.First().CorrectedIonCount)
             .Take(200)
             .ToList();
 
@@ -43,14 +43,14 @@ public static class SpectralPlotter
 
         if (clusterGroups.Count == 0)
         {
-            html.AppendLine("<p>No MIE-rescued clusters found in this dataset.</p>");
+            html.AppendLine("<p>No MIE-suppressed clusters found in this dataset.</p>");
         }
         else
         {
-            html.AppendLine($"<p class='sub'>Showing {clusterGroups.Count} rescued cluster(s), " +
+            html.AppendLine($"<p class='sub'>Showing {clusterGroups.Count} suppression-corrected cluster(s), " +
                             "ranked by corrected ion count. " +
                             "<span class='obs'>&#9646; Observed</span> &nbsp; " +
-                            "<span class='est'>&#9646; MIE correction (stacked)</span> &nbsp; " +
+                            "<span class='est'>&#9646; Suppression correction (stacked)</span> &nbsp; " +
                             "<span class='theo'>--- Theoretical averagine</span></p>");
             html.AppendLine("<div class='grid'>");
             foreach (var g in clusterGroups)
@@ -67,8 +67,7 @@ public static class SpectralPlotter
     private static string BuildCard(
         double neutralMass, int charge, List<ProcessingRow> rows, int nPeaks)
     {
-        var observed  = rows.Where(r => !r.IsEstimated).OrderBy(r => r.IsotopicIndex).ToList();
-        var estimated = rows.Where(r =>  r.IsEstimated).OrderBy(r => r.IsotopicIndex).ToList();
+        var observed  = rows.OrderBy(r => r.IsotopicIndex).ToList();
         if (observed.Count == 0) return "";
 
         var first      = observed.First();
@@ -77,7 +76,7 @@ public static class SpectralPlotter
         double ions    = first.CorrectedIonCount;
 
         int minIdx = observed.Min(r => r.IsotopicIndex);
-        int maxIdx = observed.Concat(estimated).Max(r => r.IsotopicIndex);
+        int maxIdx = observed.Max(r => r.IsotopicIndex);
         int nCols  = maxIdx - minIdx + 1;
         if (nCols < 1) return "";
 
@@ -88,12 +87,9 @@ public static class SpectralPlotter
             .ToList();
         var (offset, scale, _) = Classifier.FitAlignment(obsPeaks, theoretical);
 
-        // Normalisation: use the corrected top of each bar (suppressed peaks reach CorrectedIntensity,
-        // gap-estimated peaks reach EstimatedIntensity, normal peaks reach Intensity).
-        double maxObs  = observed.Max(r =>
+        // Normalisation: suppressed peaks reach CorrectedIntensity, normal peaks reach Intensity.
+        double norm = observed.Max(r =>
             r.IsSuppressed ? (r.CorrectedIntensity ?? r.Intensity ?? 0) : (r.Intensity ?? 0));
-        double maxEst  = estimated.Any() ? estimated.Max(r => r.EstimatedIntensity ?? 0) : 0;
-        double norm    = Math.Max(maxObs, maxEst);
         if (norm == 0) return "";
 
         // Helpers — SVG coordinate space
@@ -147,28 +143,6 @@ public static class SpectralPlotter
             double x = ColX(r.IsotopicIndex);
             // Draw segment from obsV to corV (i.e. y from ValY(corV) down to ValY(obsV))
             svg.AppendLine($"<rect x='{x:F1}' y='{ValY(corV):F1}' width='{BarW():F1}' height='{ValH(delta):F1}' fill='#ED7D31' opacity='0.9'/>");
-        }
-
-        // Orange full bars: gap-estimated peaks (drawn last so labels appear on top)
-        foreach (var r in estimated)
-        {
-            double v = (r.EstimatedIntensity ?? 0) / norm;
-            double x = ColX(r.IsotopicIndex);
-            if (ValH(v) < 0.5) continue;
-            svg.AppendLine($"<rect x='{x:F1}' y='{ValY(v):F1}' width='{BarW():F1}' height='{ValH(v):F1}' fill='#ED7D31' opacity='0.9'/>");
-            svg.AppendLine($"<text x='{x + BarW() / 2:F1}' y='{Top + ChartH + 14}' text-anchor='middle' font-size='9' fill='#777'>{r.IsotopicIndex}</text>");
-
-            // Error bar (uncertainty)
-            if (r.Uncertainty.HasValue && r.Uncertainty.Value > 0)
-            {
-                double unc  = r.Uncertainty.Value / norm;
-                double cx   = x + BarW() / 2;
-                double topY = ValY(v + unc);
-                double botY = ValY(Math.Max(v - unc, 0));
-                svg.AppendLine($"<line x1='{cx:F1}' y1='{topY:F1}' x2='{cx:F1}' y2='{botY:F1}' stroke='#c0522a' stroke-width='1.2'/>");
-                svg.AppendLine($"<line x1='{cx - 3:F1}' y1='{topY:F1}' x2='{cx + 3:F1}' y2='{topY:F1}' stroke='#c0522a' stroke-width='1.2'/>");
-                svg.AppendLine($"<line x1='{cx - 3:F1}' y1='{botY:F1}' x2='{cx + 3:F1}' y2='{botY:F1}' stroke='#c0522a' stroke-width='1.2'/>");
-            }
         }
 
         svg.AppendLine("</svg>");

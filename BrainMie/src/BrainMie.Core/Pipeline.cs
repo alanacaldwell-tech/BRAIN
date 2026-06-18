@@ -61,7 +61,6 @@ public static class Pipeline
                 if (cluster.Peaks.Count < minClusterPeaks) continue;
 
                 var classification = Classifier.Classify(cluster, nPeaks);
-                var reconPeaks     = Reconstructor.Reconstruct(cluster, classification, nPeaks);
                 var suppressed     = Classifier.DetectSuppressed(
                                          cluster, suppressionThreshold, nPeaks);
 
@@ -70,13 +69,11 @@ public static class Pipeline
                                          s => s.CorrectedIntensity);
 
                 // CorrectedIonCount: replace suppressed-peak observed intensities with
-                // their corrected values, then add estimated intensities for gap peaks.
-                double clusterIonCount = cluster.Peaks.Sum(p => p.Intensity);
-                double suppressionDelta = suppressed.Sum(
+                // their fitted theoretical values; completely absent peaks are not rescued.
+                double clusterIonCount   = cluster.Peaks.Sum(p => p.Intensity);
+                double suppressionDelta  = suppressed.Sum(
                     s => s.CorrectedIntensity - s.ObservedIntensity);
-                double correctedIonCount = clusterIonCount
-                    + suppressionDelta
-                    + reconPeaks.Sum(r => r.EstimatedIntensity);
+                double correctedIonCount = clusterIonCount + suppressionDelta;
 
                 // Observed peaks
                 foreach (var peak in cluster.Peaks)
@@ -104,28 +101,7 @@ public static class Pipeline
                         CorrectedIonCount:  correctedIonCount));
                 }
 
-                // Gap-reconstructed peaks
-                foreach (var rec in reconPeaks)
-                {
-                    results.Add(new ProcessingRow(
-                        Mz:                 null,
-                        Charge:             rec.Charge,
-                        Intensity:          null,
-                        NeutralMass:        cluster.NeutralMass,
-                        IsotopicIndex:      rec.IsotopeIndex,
-                        IsEstimated:        true,
-                        IsSuppressed:       false,
-                        EstimatedIntensity: rec.EstimatedIntensity,
-                        CorrectedIntensity: null,
-                        Uncertainty:        double.IsInfinity(rec.Uncertainty) ? null : rec.Uncertainty,
-                        Confidence:         rec.Confidence,
-                        Hypothesis:         classification.Hypothesis,
-                        FitRSquared:        classification.FitRSquared,
-                        GapAtApex:          classification.GapAtApex,
-                        Notes:              classification.Notes,
-                        ClusterIonCount:    clusterIonCount,
-                        CorrectedIonCount:  correctedIonCount));
-                }
+
             }
         }
 

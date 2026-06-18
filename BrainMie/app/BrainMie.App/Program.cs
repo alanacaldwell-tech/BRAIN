@@ -66,7 +66,6 @@ if (!File.Exists(inputPath))
 }
 
 string outputPath      = Path.ChangeExtension(inputPath, ".corrected.csv");
-string unrescuedPath   = Path.ChangeExtension(inputPath, ".unrescued.csv");
 string proteoformPath  = Path.ChangeExtension(inputPath, ".proteoforms.csv");
 string spectralPath    = Path.ChangeExtension(inputPath, ".spectral_check.html");
 
@@ -117,15 +116,7 @@ static void WriteRow(StreamWriter w, ProcessingRow row)
         $"{row.ClusterIonCount:G6},{row.CorrectedIonCount:G6},{Q(row.Notes)}");
 }
 
-// Unrescued: observed peaks only (no estimated peaks injected)
-using (var w = new StreamWriter(unrescuedPath))
-{
-    w.WriteLine(CsvHeader);
-    foreach (var row in rows.Where(r => !r.IsEstimated))
-        WriteRow(w, row);
-}
-
-// Rescued: observed peaks + reconstructed missing peaks
+// All peaks: CorrectedIntensity populated for suppressed peaks, null otherwise.
 using (var w = new StreamWriter(outputPath))
 {
     w.WriteLine(CsvHeader);
@@ -163,17 +154,15 @@ SpectralPlotter.GenerateHtml(rows, spectralPath);
 
 // ---- Summary ----------------------------------------------------------------
 int totalRows  = rows.Count;
-int estimated  = rows.Count(r => r.IsEstimated);
 int suppressed = rows.Count(r => r.IsSuppressed);
-int mie        = rows.Count(r => r.Hypothesis == "mie"       && !r.IsEstimated);
-int overlap    = rows.Count(r => r.Hypothesis == "overlap"   && !r.IsEstimated);
-int ambiguous  = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
+int mie        = rows.Count(r => r.Hypothesis == "mie");
+int overlap    = rows.Count(r => r.Hypothesis == "overlap");
+int ambiguous  = rows.Count(r => r.Hypothesis == "ambiguous");
 
-Console.WriteLine($"Unrescued:    {unrescuedPath}  ({totalRows - estimated} peaks)");
-Console.WriteLine($"Rescued:      {outputPath}  ({totalRows} peaks, {estimated} estimated)");
+Console.WriteLine($"Output:       {outputPath}  ({totalRows} peaks)");
 Console.WriteLine($"Proteoforms:  {proteoformPath}  ({proteoforms.Count} entries, noise floor ≥ {noiseFloor:G3} ions, {noisyRemoved} removed)");
 Console.WriteLine($"Spectral:     {spectralPath}");
-Console.WriteLine($"              {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous  |  {estimated} gap-rescued  |  {suppressed} suppressed");
+Console.WriteLine($"              {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous  |  {suppressed} suppression-corrected");
 
 PauseIfInteractive();
 return 0;
@@ -229,7 +218,7 @@ static void PrintHelp() => Console.WriteLine("""
       -h, --help        Show this help
 
     Output files written next to the input:
-      <input>.unrescued.csv    Observed peaks only, before MIE correction
-      <input>.corrected.csv    Observed + reconstructed MIE gap peaks
+      <input>.corrected.csv    All observed peaks; CorrectedIntensity column filled for suppressed peaks
       <input>.proteoforms.csv  One row per proteoform, ion counts summed across charge states
+      <input>.spectral_check.html  SVG charts showing suppression correction per cluster
     """);
