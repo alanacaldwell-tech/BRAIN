@@ -97,7 +97,8 @@ static string Q(string  s) => $"\"{s.Replace("\"", "\"\"")}\"";
 
 const string CsvHeader =
     "Mz,Charge,Intensity,NeutralMass,IsotopicIndex,IsEstimated," +
-    "EstimatedIntensity,Uncertainty,Confidence,Hypothesis,FitRSquared,GapAtApex,Notes";
+    "EstimatedIntensity,Uncertainty,Confidence,Hypothesis,FitRSquared,GapAtApex," +
+    "ClusterIonCount,CorrectedIonCount,Notes";
 
 static void WriteRow(StreamWriter w, ProcessingRow row)
 {
@@ -105,7 +106,8 @@ static void WriteRow(StreamWriter w, ProcessingRow row)
         $"{F(row.Mz)},{row.Charge},{F(row.Intensity)},{row.NeutralMass:G6}," +
         $"{row.IsotopicIndex},{S(row.IsEstimated)},{F(row.EstimatedIntensity)}," +
         $"{F(row.Uncertainty)},{row.Confidence:G4},{row.Hypothesis}," +
-        $"{row.FitRSquared:G4},{S(row.GapAtApex)},{Q(row.Notes)}");
+        $"{row.FitRSquared:G4},{S(row.GapAtApex)}," +
+        $"{row.ClusterIonCount:G6},{row.CorrectedIonCount:G6},{Q(row.Notes)}");
 }
 
 // Unrescued: observed peaks only (no estimated peaks injected)

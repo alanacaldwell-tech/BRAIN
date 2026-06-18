@@ -55,6 +55,9 @@ public static class Pipeline
                 var classification = Classifier.Classify(cluster, nPeaks);
                 var reconPeaks     = Reconstructor.Reconstruct(cluster, classification, nPeaks);
 
+                double clusterIonCount   = cluster.Peaks.Sum(p => p.Intensity);
+                double correctedIonCount = clusterIonCount + reconPeaks.Sum(r => r.EstimatedIntensity);
+
                 // Observed peaks
                 foreach (var peak in cluster.Peaks)
                 {
@@ -68,7 +71,9 @@ public static class Pipeline
                         Hypothesis:         classification.Hypothesis,
                         FitRSquared:        classification.FitRSquared,
                         GapAtApex:          classification.GapAtApex,
-                        Notes:              classification.Notes));
+                        Notes:              classification.Notes,
+                        ClusterIonCount:    clusterIonCount,
+                        CorrectedIonCount:  correctedIonCount));
                 }
 
                 // Reconstructed (rescued) peaks
@@ -87,7 +92,9 @@ public static class Pipeline
                         Hypothesis:         classification.Hypothesis,
                         FitRSquared:        classification.FitRSquared,
                         GapAtApex:          classification.GapAtApex,
-                        Notes:              classification.Notes));
+                        Notes:              classification.Notes,
+                        ClusterIonCount:    clusterIonCount,
+                        CorrectedIonCount:  correctedIonCount));
                 }
             }
         }
