@@ -17,16 +17,21 @@ public static class Pipeline
     /// <param name="binWidth">m/z bin width in Da for ion-event aggregation. Default 0.02 Da.</param>
     /// <param name="maxGap">Max consecutive missing isotope peaks per cluster. Default 3.</param>
     /// <param name="ppmTolerance">m/z matching tolerance in ppm. Default 10 ppm.</param>
-    /// <param name="minClusterPeaks">Minimum observed peaks required to process a gap-free cluster. Default 3.</param>
+    /// <param name="minClusterPeaks">Minimum observed peaks to retain any cluster. Default 8.</param>
     /// <param name="nPeaks">Number of theoretical isotope peaks to generate. Default 25.</param>
+    /// <param name="suppressionThreshold">
+    /// Fraction of fitted theoretical intensity below which an observed peak is
+    /// considered MIE-suppressed (present but anomalously low). Default 0.5 (50%).
+    /// </param>
     public static List<ProcessingRow> ProcessDmt(
-        string       filePath,
-        (int Min, int Max) chargeRange   = default,
-        double       binWidth            = 0.02,
-        int          maxGap              = 3,
-        double       ppmTolerance        = 10.0,
-        int          minClusterPeaks     = 3,
-        int          nPeaks              = 25)
+        string             filePath,
+        (int Min, int Max) chargeRange          = default,
+        double             binWidth             = 0.02,
+        int                maxGap               = 3,
+        double             ppmTolerance         = 10.0,
+        int                minClusterPeaks      = 8,
+        int                nPeaks               = 25,
+        double             suppressionThreshold = 0.5)
     {
         if (chargeRange == default) chargeRange = (1, 10);
 
@@ -52,23 +57,43 @@ public static class Pipeline
 
             foreach (var cluster in clusters)
             {
-                if (cluster.Peaks.Count < minClusterPeaks && cluster.GapIndices.Count == 0)
-                    continue;
+                // Require minimum isotope count for all clusters, gapped or not.
+                if (cluster.Peaks.Count < minClusterPeaks) continue;
 
                 var classification = Classifier.Classify(cluster, nPeaks);
                 var reconPeaks     = Reconstructor.Reconstruct(cluster, classification, nPeaks);
+                var suppressed     = Classifier.DetectSuppressed(
+                                         cluster, suppressionThreshold, nPeaks);
 
-                double clusterIonCount   = cluster.Peaks.Sum(p => p.Intensity);
-                double correctedIonCount = clusterIonCount + reconPeaks.Sum(r => r.EstimatedIntensity);
+                var suppressedMap  = suppressed.ToDictionary(
+                                         s => s.IsotopeIndex,
+                                         s => s.CorrectedIntensity);
+
+                // CorrectedIonCount: replace suppressed-peak observed intensities with
+                // their corrected values, then add estimated intensities for gap peaks.
+                double clusterIonCount = cluster.Peaks.Sum(p => p.Intensity);
+                double suppressionDelta = suppressed.Sum(
+                    s => s.CorrectedIntensity - s.ObservedIntensity);
+                double correctedIonCount = clusterIonCount
+                    + suppressionDelta
+                    + reconPeaks.Sum(r => r.EstimatedIntensity);
 
                 // Observed peaks
                 foreach (var peak in cluster.Peaks)
                 {
+                    bool   isSuppressed      = suppressedMap.TryGetValue(peak.IsotopeIndex, out double ci);
+                    double? correctedIntensity = isSuppressed ? ci : null;
+
                     results.Add(new ProcessingRow(
-                        peak.Mz, peak.Charge, peak.Intensity,
-                        cluster.NeutralMass, peak.IsotopeIndex,
+                        Mz:                 peak.Mz,
+                        Charge:             peak.Charge,
+                        Intensity:          peak.Intensity,
+                        NeutralMass:        cluster.NeutralMass,
+                        IsotopicIndex:      peak.IsotopeIndex,
                         IsEstimated:        false,
+                        IsSuppressed:       isSuppressed,
                         EstimatedIntensity: null,
+                        CorrectedIntensity: correctedIntensity,
                         Uncertainty:        null,
                         Confidence:         classification.Confidence,
                         Hypothesis:         classification.Hypothesis,
@@ -79,7 +104,7 @@ public static class Pipeline
                         CorrectedIonCount:  correctedIonCount));
                 }
 
-                // Reconstructed (rescued) peaks
+                // Gap-reconstructed peaks
                 foreach (var rec in reconPeaks)
                 {
                     results.Add(new ProcessingRow(
@@ -89,7 +114,9 @@ public static class Pipeline
                         NeutralMass:        cluster.NeutralMass,
                         IsotopicIndex:      rec.IsotopeIndex,
                         IsEstimated:        true,
+                        IsSuppressed:       false,
                         EstimatedIntensity: rec.EstimatedIntensity,
+                        CorrectedIntensity: null,
                         Uncertainty:        double.IsInfinity(rec.Uncertainty) ? null : rec.Uncertainty,
                         Confidence:         rec.Confidence,
                         Hypothesis:         classification.Hypothesis,

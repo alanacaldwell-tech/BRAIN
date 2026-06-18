@@ -85,6 +85,69 @@ public static class Classifier
     }
 
     // ---------------------------------------------------------------------------
+    // Suppression detection
+    // ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Identify observed peaks whose intensity is below
+    /// <paramref name="suppressionThreshold"/> × the fitted theoretical expectation.
+    /// Uses a two-pass robust fit: first pass includes all peaks; suppressed peaks are
+    /// excluded from the second pass so they don't drag the scale factor down.
+    /// </summary>
+    /// <returns>
+    /// List of (IsotopeIndex, ObservedIntensity, CorrectedIntensity) for every peak
+    /// judged to be MIE-suppressed. Empty when fewer than 2 non-suppressed peaks
+    /// remain for the second-pass fit.
+    /// </returns>
+    public static List<(int IsotopeIndex, double ObservedIntensity, double CorrectedIntensity)>
+        DetectSuppressed(
+            IsotopicCluster cluster,
+            double suppressionThreshold = 0.5,
+            int nPeaks = 25)
+    {
+        var theoretical = IsotopeDistribution.ComputeEnvelope(
+            cluster.NeutralMass, cluster.Charge, nPeaks);
+        if (theoretical.Count == 0) return [];
+
+        // First pass: fit with all peaks
+        var (offset1, scale1, _) = FitAlignment(cluster.Peaks, theoretical);
+        if (scale1 <= 0) return [];
+
+        var suppressedIdx = cluster.Peaks
+            .Where(p =>
+            {
+                int ti = p.IsotopeIndex + offset1;
+                if (ti < 0 || ti >= theoretical.Count) return false;
+                double expected = scale1 * theoretical[ti].Intensity;
+                return expected > 0 && p.Intensity / expected < suppressionThreshold;
+            })
+            .Select(p => p.IsotopeIndex)
+            .ToHashSet();
+
+        if (suppressedIdx.Count == 0) return [];
+
+        // Second pass: refit without suppressed peaks for an unbiased scale estimate
+        var unsuppressed = cluster.Peaks
+            .Where(p => !suppressedIdx.Contains(p.IsotopeIndex))
+            .ToList();
+        if (unsuppressed.Count < 2) return [];
+
+        var (offset2, scale2, _) = FitAlignment(unsuppressed, theoretical);
+
+        return cluster.Peaks
+            .Where(p => suppressedIdx.Contains(p.IsotopeIndex))
+            .Select(p =>
+            {
+                int ti = p.IsotopeIndex + offset2;
+                double corrected = (ti >= 0 && ti < theoretical.Count)
+                    ? Math.Max(0.0, scale2 * theoretical[ti].Intensity)
+                    : p.Intensity;
+                return (p.IsotopeIndex, p.Intensity, corrected);
+            })
+            .ToList();
+    }
+
+    // ---------------------------------------------------------------------------
     // Internal helpers (internal so Reconstructor can reuse FitAlignment)
     // ---------------------------------------------------------------------------
 

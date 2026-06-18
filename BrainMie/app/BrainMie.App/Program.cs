@@ -102,15 +102,16 @@ static string S(bool    b) => b ? "true" : "false";
 static string Q(string  s) => $"\"{s.Replace("\"", "\"\"")}\"";
 
 const string CsvHeader =
-    "Mz,Charge,Intensity,NeutralMass,IsotopicIndex,IsEstimated," +
-    "EstimatedIntensity,Uncertainty,Confidence,Hypothesis,FitRSquared,GapAtApex," +
-    "ClusterIonCount,CorrectedIonCount,Notes";
+    "Mz,Charge,Intensity,NeutralMass,IsotopicIndex,IsEstimated,IsSuppressed," +
+    "EstimatedIntensity,CorrectedIntensity,Uncertainty,Confidence,Hypothesis," +
+    "FitRSquared,GapAtApex,ClusterIonCount,CorrectedIonCount,Notes";
 
 static void WriteRow(StreamWriter w, ProcessingRow row)
 {
     w.WriteLine(
         $"{F(row.Mz)},{row.Charge},{F(row.Intensity)},{row.NeutralMass:G6}," +
-        $"{row.IsotopicIndex},{S(row.IsEstimated)},{F(row.EstimatedIntensity)}," +
+        $"{row.IsotopicIndex},{S(row.IsEstimated)},{S(row.IsSuppressed)}," +
+        $"{F(row.EstimatedIntensity)},{F(row.CorrectedIntensity)}," +
         $"{F(row.Uncertainty)},{row.Confidence:G4},{row.Hypothesis}," +
         $"{row.FitRSquared:G4},{S(row.GapAtApex)}," +
         $"{row.ClusterIonCount:G6},{row.CorrectedIonCount:G6},{Q(row.Notes)}");
@@ -161,17 +162,18 @@ using (var w = new StreamWriter(proteoformPath))
 SpectralPlotter.GenerateHtml(rows, spectralPath);
 
 // ---- Summary ----------------------------------------------------------------
-int totalRows = rows.Count;
-int estimated = rows.Count(r => r.IsEstimated);
-int mie       = rows.Count(r => r.Hypothesis == "mie"       && !r.IsEstimated);
-int overlap   = rows.Count(r => r.Hypothesis == "overlap"   && !r.IsEstimated);
-int ambiguous = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
+int totalRows  = rows.Count;
+int estimated  = rows.Count(r => r.IsEstimated);
+int suppressed = rows.Count(r => r.IsSuppressed);
+int mie        = rows.Count(r => r.Hypothesis == "mie"       && !r.IsEstimated);
+int overlap    = rows.Count(r => r.Hypothesis == "overlap"   && !r.IsEstimated);
+int ambiguous  = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
 
 Console.WriteLine($"Unrescued:    {unrescuedPath}  ({totalRows - estimated} peaks)");
 Console.WriteLine($"Rescued:      {outputPath}  ({totalRows} peaks, {estimated} estimated)");
 Console.WriteLine($"Proteoforms:  {proteoformPath}  ({proteoforms.Count} entries, noise floor ≥ {noiseFloor:G3} ions, {noisyRemoved} removed)");
 Console.WriteLine($"Spectral:     {spectralPath}");
-Console.WriteLine($"              {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous");
+Console.WriteLine($"              {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous  |  {estimated} gap-rescued  |  {suppressed} suppressed");
 
 PauseIfInteractive();
 return 0;
