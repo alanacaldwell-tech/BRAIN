@@ -2,46 +2,61 @@ using BrainMie.Core;
 using BrainMie.Core.Data;
 
 // ---- Argument parsing -------------------------------------------------------
-if (args.Length < 1 || args[0] is "-h" or "--help")
+if (args.Length > 0 && args[0] is "-h" or "--help")
 {
-    Console.Error.WriteLine("""
-        BrainMie — Multi-Ion Event correction for .dmt mass spectrometry files
-
-        Usage:
-          BrainMie <input.dmt> [options]
-
-        Options:
-          --charge-min N    Minimum charge state to process (default 1)
-          --charge-max N    Maximum charge state to process (default 10)
-          --max-gap N       Max consecutive missing isotope peaks per cluster (default 3)
-          --ppm N           m/z matching tolerance in ppm (default 20)
-          --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.005)
-          --output PATH     Output CSV path (default: <input>.corrected.csv)
-          -h, --help        Show this help
-        """);
-    return args.Length < 1 ? 1 : 0;
+    PrintHelp();
+    return 0;
 }
 
-string inputPath  = args[0];
+string inputPath;
 int    chargeMin  = 1;
 int    chargeMax  = 10;
 int    maxGap     = 3;
 double ppm        = 20.0;
 double binWidth   = 0.005;
-string outputPath = Path.ChangeExtension(inputPath, ".corrected.csv");
 
-for (int i = 1; i < args.Length - 1; i++)
+if (args.Length >= 1)
 {
-    switch (args[i].ToLowerInvariant())
+    // Command-line mode: BrainMie.exe input.dmt [options]
+    inputPath = args[0];
+    for (int i = 1; i < args.Length - 1; i++)
     {
-        case "--charge-min": chargeMin  = int.Parse(args[++i]);    break;
-        case "--charge-max": chargeMax  = int.Parse(args[++i]);    break;
-        case "--max-gap":    maxGap     = int.Parse(args[++i]);    break;
-        case "--ppm":        ppm        = double.Parse(args[++i]); break;
-        case "--bin-width":  binWidth   = double.Parse(args[++i]); break;
-        case "--output":     outputPath = args[++i];               break;
+        switch (args[i].ToLowerInvariant())
+        {
+            case "--charge-min": chargeMin = int.Parse(args[++i]);    break;
+            case "--charge-max": chargeMax = int.Parse(args[++i]);    break;
+            case "--max-gap":    maxGap    = int.Parse(args[++i]);    break;
+            case "--ppm":        ppm       = double.Parse(args[++i]); break;
+            case "--bin-width":  binWidth  = double.Parse(args[++i]); break;
+        }
     }
 }
+else
+{
+    // Interactive mode: run from Visual Studio with no arguments.
+    Console.WriteLine("BrainMie — Multi-Ion Event correction");
+    Console.WriteLine("======================================");
+    Console.WriteLine();
+
+    inputPath = Prompt("Path to .dmt file", required: true)!;
+
+    string raw;
+    raw = Prompt($"Minimum charge state [{chargeMin}]");
+    if (!string.IsNullOrWhiteSpace(raw)) chargeMin = int.Parse(raw);
+
+    raw = Prompt($"Maximum charge state [{chargeMax}]");
+    if (!string.IsNullOrWhiteSpace(raw)) chargeMax = int.Parse(raw);
+
+    raw = Prompt($"Max consecutive missing isotope peaks [{maxGap}]");
+    if (!string.IsNullOrWhiteSpace(raw)) maxGap = int.Parse(raw);
+
+    raw = Prompt($"m/z tolerance in ppm [{ppm}]");
+    if (!string.IsNullOrWhiteSpace(raw)) ppm = double.Parse(raw);
+
+    Console.WriteLine();
+}
+
+string outputPath = Path.ChangeExtension(inputPath, ".corrected.csv");
 
 // ---- Run pipeline -----------------------------------------------------------
 Console.WriteLine($"Input:   {inputPath}");
@@ -52,14 +67,15 @@ try
 {
     rows = Pipeline.ProcessDmt(
         inputPath,
-        chargeRange:      (chargeMin, chargeMax),
-        binWidth:         binWidth,
-        maxGap:           maxGap,
-        ppmTolerance:     ppm);
+        chargeRange:  (chargeMin, chargeMax),
+        binWidth:     binWidth,
+        maxGap:       maxGap,
+        ppmTolerance: ppm);
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"Error: {ex.Message}");
+    PauseIfInteractive();
     return 1;
 }
 
@@ -70,9 +86,9 @@ writer.WriteLine(
     "Mz,Charge,Intensity,NeutralMass,IsotopicIndex,IsEstimated," +
     "EstimatedIntensity,Uncertainty,Confidence,Hypothesis,FitRSquared,GapAtApex,Notes");
 
-static string F(double? v)  => v.HasValue ? v.Value.ToString("G6") : "";
-static string S(bool    b)  => b ? "true" : "false";
-static string Q(string  s)  => $"\"{s.Replace("\"", "\"\"")}\"";
+static string F(double? v) => v.HasValue ? v.Value.ToString("G6") : "";
+static string S(bool    b) => b ? "true" : "false";
+static string Q(string  s) => $"\"{s.Replace("\"", "\"\"")}\"";
 
 foreach (var row in rows)
 {
@@ -84,14 +100,57 @@ foreach (var row in rows)
 }
 
 // ---- Summary ----------------------------------------------------------------
-int totalRows  = rows.Count;
-int estimated  = rows.Count(r => r.IsEstimated);
-int mie        = rows.Count(r => r.Hypothesis == "mie" && !r.IsEstimated);
-int overlap    = rows.Count(r => r.Hypothesis == "overlap" && !r.IsEstimated);
-int ambiguous  = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
+int totalRows = rows.Count;
+int estimated = rows.Count(r => r.IsEstimated);
+int mie       = rows.Count(r => r.Hypothesis == "mie"       && !r.IsEstimated);
+int overlap   = rows.Count(r => r.Hypothesis == "overlap"   && !r.IsEstimated);
+int ambiguous = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
 
 Console.WriteLine($"Output:  {outputPath}");
 Console.WriteLine($"Rows:    {totalRows} total  ({estimated} estimated/rescued peaks)");
 Console.WriteLine($"         {mie} MIE peaks  |  {overlap} overlap peaks  |  {ambiguous} ambiguous");
 
+PauseIfInteractive();
 return 0;
+
+// ---- Helpers ----------------------------------------------------------------
+static string? Prompt(string label, bool required = false)
+{
+    while (true)
+    {
+        Console.Write($"  {label}: ");
+        string? value = Console.ReadLine()?.Trim();
+        if (!required || !string.IsNullOrWhiteSpace(value))
+            return value;
+        Console.WriteLine("  (required — please enter a value)");
+    }
+}
+
+static void PauseIfInteractive()
+{
+    // Keep the window open when launched directly from Visual Studio.
+    if (!Console.IsInputRedirected)
+    {
+        Console.WriteLine();
+        Console.Write("Press any key to exit...");
+        Console.ReadKey(intercept: true);
+    }
+}
+
+static void PrintHelp() => Console.WriteLine("""
+    BrainMie — Multi-Ion Event correction for .dmt mass spectrometry files
+
+    Usage:
+      BrainMie <input.dmt> [options]
+      BrainMie                         (interactive prompts)
+
+    Options:
+      --charge-min N    Minimum charge state to process (default 1)
+      --charge-max N    Maximum charge state to process (default 10)
+      --max-gap N       Max consecutive missing isotope peaks per cluster (default 3)
+      --ppm N           m/z matching tolerance in ppm (default 20)
+      --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.005)
+      -h, --help        Show this help
+
+    Output is written to <input>.corrected.csv
+    """);
