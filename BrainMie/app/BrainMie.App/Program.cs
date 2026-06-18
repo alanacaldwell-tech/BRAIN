@@ -14,6 +14,7 @@ int    chargeMax  = 10;
 int    maxGap     = 3;
 double ppm        = 20.0;
 double binWidth   = 0.005;
+double massTol    = 1.0;
 
 if (args.Length >= 1)
 {
@@ -28,6 +29,7 @@ if (args.Length >= 1)
             case "--max-gap":    maxGap    = int.Parse(args[++i]);    break;
             case "--ppm":        ppm       = double.Parse(args[++i]); break;
             case "--bin-width":  binWidth  = double.Parse(args[++i]); break;
+            case "--mass-tol":   massTol   = double.Parse(args[++i]); break;
         }
     }
 }
@@ -53,6 +55,9 @@ else
     raw = Prompt($"m/z tolerance in ppm [{ppm}]");
     if (!string.IsNullOrWhiteSpace(raw)) ppm = double.Parse(raw);
 
+    raw = Prompt($"Proteoform grouping tolerance in Da [{massTol}]");
+    if (!string.IsNullOrWhiteSpace(raw)) massTol = double.Parse(raw);
+
     Console.WriteLine();
 }
 
@@ -66,12 +71,13 @@ if (!File.Exists(inputPath))
     return 1;
 }
 
-string outputPath    = Path.ChangeExtension(inputPath, ".corrected.csv");
-string unrescuedPath = Path.ChangeExtension(inputPath, ".unrescued.csv");
+string outputPath      = Path.ChangeExtension(inputPath, ".corrected.csv");
+string unrescuedPath   = Path.ChangeExtension(inputPath, ".unrescued.csv");
+string proteoformPath  = Path.ChangeExtension(inputPath, ".proteoforms.csv");
 
 // ---- Run pipeline -----------------------------------------------------------
 Console.WriteLine($"Input:   {inputPath}");
-Console.WriteLine($"Charges: {chargeMin}–{chargeMax}  |  max gap: {maxGap}  |  {ppm} ppm");
+Console.WriteLine($"Charges: {chargeMin}–{chargeMax}  |  max gap: {maxGap}  |  {ppm} ppm  |  mass tol: {massTol} Da");
 
 List<ProcessingRow> rows;
 try
@@ -90,7 +96,7 @@ catch (Exception ex)
     return 1;
 }
 
-// ---- Write CSV output -------------------------------------------------------
+// ---- Write per-peak CSV output ----------------------------------------------
 static string F(double? v) => v.HasValue ? v.Value.ToString("G6") : "";
 static string S(bool    b) => b ? "true" : "false";
 static string Q(string  s) => $"\"{s.Replace("\"", "\"\"")}\"";
@@ -126,6 +132,25 @@ using (var w = new StreamWriter(outputPath))
         WriteRow(w, row);
 }
 
+// ---- Write proteoform summary CSV ------------------------------------------
+var proteoforms = ProteoformAggregator.Aggregate(rows, massTol);
+
+const string PfHeader =
+    "NeutralMass,ChargeStates,ClusterCount,TotalObservedIonCount,TotalCorrectedIonCount," +
+    "Hypothesis,MaxConfidence";
+
+using (var w = new StreamWriter(proteoformPath))
+{
+    w.WriteLine(PfHeader);
+    foreach (var pf in proteoforms)
+    {
+        w.WriteLine(
+            $"{pf.NeutralMass:G8},{pf.ChargeStates},{pf.ClusterCount}," +
+            $"{pf.TotalObservedIonCount:G6},{pf.TotalCorrectedIonCount:G6}," +
+            $"{pf.Hypothesis},{pf.MaxConfidence:G4}");
+    }
+}
+
 // ---- Summary ----------------------------------------------------------------
 int totalRows = rows.Count;
 int estimated = rows.Count(r => r.IsEstimated);
@@ -133,9 +158,10 @@ int mie       = rows.Count(r => r.Hypothesis == "mie"       && !r.IsEstimated);
 int overlap   = rows.Count(r => r.Hypothesis == "overlap"   && !r.IsEstimated);
 int ambiguous = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
 
-Console.WriteLine($"Unrescued: {unrescuedPath}  ({totalRows - estimated} peaks)");
-Console.WriteLine($"Rescued:   {outputPath}  ({totalRows} peaks, {estimated} estimated)");
-Console.WriteLine($"           {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous");
+Console.WriteLine($"Unrescued:    {unrescuedPath}  ({totalRows - estimated} peaks)");
+Console.WriteLine($"Rescued:      {outputPath}  ({totalRows} peaks, {estimated} estimated)");
+Console.WriteLine($"Proteoforms:  {proteoformPath}  ({proteoforms.Count} entries, {massTol} Da grouping)");
+Console.WriteLine($"              {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous");
 
 PauseIfInteractive();
 return 0;
@@ -187,7 +213,11 @@ static void PrintHelp() => Console.WriteLine("""
       --max-gap N       Max consecutive missing isotope peaks per cluster (default 3)
       --ppm N           m/z matching tolerance in ppm (default 20)
       --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.005)
+      --mass-tol F      Neutral-mass tolerance in Da for proteoform grouping (default 1.0)
       -h, --help        Show this help
 
-    Output is written to <input>.corrected.csv
+    Output files written next to the input:
+      <input>.unrescued.csv    Observed peaks only, before MIE correction
+      <input>.corrected.csv    Observed + reconstructed MIE gap peaks
+      <input>.proteoforms.csv  One row per proteoform, ion counts summed across charge states
     """);
