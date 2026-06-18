@@ -68,6 +68,7 @@ if (!File.Exists(inputPath))
 string outputPath      = Path.ChangeExtension(inputPath, ".corrected.csv");
 string unrescuedPath   = Path.ChangeExtension(inputPath, ".unrescued.csv");
 string proteoformPath  = Path.ChangeExtension(inputPath, ".proteoforms.csv");
+string spectralPath    = Path.ChangeExtension(inputPath, ".spectral_check.html");
 
 // ---- Auto-detect charge range from file -------------------------------------
 var (detectedMin, detectedMax) = DmtReader.ReadChargeRange(inputPath);
@@ -156,6 +157,9 @@ using (var w = new StreamWriter(proteoformPath))
     }
 }
 
+// ---- Write spectral check HTML ----------------------------------------------
+SpectralPlotter.GenerateHtml(rows, spectralPath);
+
 // ---- Summary ----------------------------------------------------------------
 int totalRows = rows.Count;
 int estimated = rows.Count(r => r.IsEstimated);
@@ -166,6 +170,7 @@ int ambiguous = rows.Count(r => r.Hypothesis == "ambiguous" && !r.IsEstimated);
 Console.WriteLine($"Unrescued:    {unrescuedPath}  ({totalRows - estimated} peaks)");
 Console.WriteLine($"Rescued:      {outputPath}  ({totalRows} peaks, {estimated} estimated)");
 Console.WriteLine($"Proteoforms:  {proteoformPath}  ({proteoforms.Count} entries, noise floor ≥ {noiseFloor:G3} ions, {noisyRemoved} removed)");
+Console.WriteLine($"Spectral:     {spectralPath}");
 Console.WriteLine($"              {mie} MIE  |  {overlap} overlap  |  {ambiguous} ambiguous");
 
 PauseIfInteractive();
