@@ -9,10 +9,10 @@ if (args.Length > 0 && args[0] is "-h" or "--help")
 }
 
 string inputPath;
-int    chargeMin  = 1;
-int    chargeMax  = 10;
+int?   chargeMinOverride = null;
+int?   chargeMaxOverride = null;
 int    maxGap     = 3;
-double ppm        = 20.0;
+double ppm        = 10.0;
 double binWidth   = 0.005;
 double massTol    = 1.0;
 
@@ -24,8 +24,8 @@ if (args.Length >= 1)
     {
         switch (args[i].ToLowerInvariant())
         {
-            case "--charge-min": chargeMin = int.Parse(args[++i]);    break;
-            case "--charge-max": chargeMax = int.Parse(args[++i]);    break;
+            case "--charge-min": chargeMinOverride = int.Parse(args[++i]);    break;
+            case "--charge-max": chargeMaxOverride = int.Parse(args[++i]);    break;
             case "--max-gap":    maxGap    = int.Parse(args[++i]);    break;
             case "--ppm":        ppm       = double.Parse(args[++i]); break;
             case "--bin-width":  binWidth  = double.Parse(args[++i]); break;
@@ -43,16 +43,10 @@ else
     inputPath = PromptFilePath();
 
     string raw;
-    raw = Prompt($"Minimum charge state [{chargeMin}]");
-    if (!string.IsNullOrWhiteSpace(raw)) chargeMin = int.Parse(raw);
-
-    raw = Prompt($"Maximum charge state [{chargeMax}]");
-    if (!string.IsNullOrWhiteSpace(raw)) chargeMax = int.Parse(raw);
-
     raw = Prompt($"Max consecutive missing isotope peaks [{maxGap}]");
     if (!string.IsNullOrWhiteSpace(raw)) maxGap = int.Parse(raw);
 
-    raw = Prompt($"m/z tolerance in ppm [{ppm}]");
+    raw = Prompt($"m/z tolerance in ppm (Orbitrap: 5–10, Q-TOF: 10–20) [{ppm}]");
     if (!string.IsNullOrWhiteSpace(raw)) ppm = double.Parse(raw);
 
     raw = Prompt($"Proteoform grouping tolerance in Da [{massTol}]");
@@ -75,9 +69,14 @@ string outputPath      = Path.ChangeExtension(inputPath, ".corrected.csv");
 string unrescuedPath   = Path.ChangeExtension(inputPath, ".unrescued.csv");
 string proteoformPath  = Path.ChangeExtension(inputPath, ".proteoforms.csv");
 
+// ---- Auto-detect charge range from file -------------------------------------
+var (detectedMin, detectedMax) = DmtReader.ReadChargeRange(inputPath);
+int chargeMin = chargeMinOverride ?? detectedMin;
+int chargeMax = chargeMaxOverride ?? detectedMax;
+
 // ---- Run pipeline -----------------------------------------------------------
 Console.WriteLine($"Input:   {inputPath}");
-Console.WriteLine($"Charges: {chargeMin}–{chargeMax}  |  max gap: {maxGap}  |  {ppm} ppm  |  mass tol: {massTol} Da");
+Console.WriteLine($"Charges: {chargeMin}–{chargeMax}{(chargeMinOverride is null && chargeMaxOverride is null ? " (auto)" : " (override)")}  |  max gap: {maxGap}  |  {ppm} ppm  |  mass tol: {massTol} Da");
 
 List<ProcessingRow> rows;
 try
@@ -208,10 +207,10 @@ static void PrintHelp() => Console.WriteLine("""
       BrainMie                         (interactive prompts)
 
     Options:
-      --charge-min N    Minimum charge state to process (default 1)
-      --charge-max N    Maximum charge state to process (default 10)
+      --charge-min N    Override minimum charge state (default: auto-detected from file)
+      --charge-max N    Override maximum charge state (default: auto-detected from file)
       --max-gap N       Max consecutive missing isotope peaks per cluster (default 3)
-      --ppm N           m/z matching tolerance in ppm (default 20)
+      --ppm N           m/z matching tolerance in ppm; Orbitrap: 5–10, Q-TOF: 10–20 (default 10)
       --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.005)
       --mass-tol F      Neutral-mass tolerance in Da for proteoform grouping (default 1.0)
       -h, --help        Show this help
