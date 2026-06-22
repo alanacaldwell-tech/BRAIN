@@ -44,7 +44,7 @@ else
 
     inputPath = PromptFilePath();
 
-    string raw;
+    string? raw;
     raw = Prompt($"Max consecutive missing isotope peaks [{maxGap}]");
     if (!string.IsNullOrWhiteSpace(raw)) maxGap = int.Parse(raw);
 
