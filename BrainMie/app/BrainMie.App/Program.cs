@@ -9,13 +9,11 @@ if (args.Length > 0 && args[0] is "-h" or "--help")
 }
 
 string inputPath;
-int?   chargeMinOverride = null;
-int?   chargeMaxOverride = null;
-int    maxGap     = 3;
-double ppm        = 10.0;
-double binWidth   = 0.02;
-double massTol    = 1.0;
-double minR2      = 0.5;
+int    maxGap       = 3;
+double massMatchTol = 0.2;
+double binWidth     = 0.02;
+double massTol      = 1.0;
+double minR2        = 0.5;
 
 if (args.Length >= 1)
 {
@@ -25,13 +23,11 @@ if (args.Length >= 1)
     {
         switch (args[i].ToLowerInvariant())
         {
-            case "--charge-min": chargeMinOverride = int.Parse(args[++i]);    break;
-            case "--charge-max": chargeMaxOverride = int.Parse(args[++i]);    break;
-            case "--max-gap":    maxGap    = int.Parse(args[++i]);    break;
-            case "--ppm":        ppm       = double.Parse(args[++i]); break;
-            case "--bin-width":  binWidth  = double.Parse(args[++i]); break;
-            case "--mass-tol":   massTol   = double.Parse(args[++i]); break;
-            case "--min-r2":     minR2     = double.Parse(args[++i]); break;
+            case "--max-gap":   maxGap       = int.Parse(args[++i]);    break;
+            case "--match-tol": massMatchTol = double.Parse(args[++i]); break;
+            case "--bin-width": binWidth     = double.Parse(args[++i]); break;
+            case "--mass-tol":  massTol      = double.Parse(args[++i]); break;
+            case "--min-r2":    minR2        = double.Parse(args[++i]); break;
         }
     }
 }
@@ -48,8 +44,8 @@ else
     raw = Prompt($"Max consecutive missing isotope peaks [{maxGap}]");
     if (!string.IsNullOrWhiteSpace(raw)) maxGap = int.Parse(raw);
 
-    raw = Prompt($"m/z tolerance in ppm (Orbitrap: 5–10, Q-TOF: 10–20) [{ppm}]");
-    if (!string.IsNullOrWhiteSpace(raw)) ppm = double.Parse(raw);
+    raw = Prompt($"Mass match tolerance in Da [{massMatchTol}]");
+    if (!string.IsNullOrWhiteSpace(raw)) massMatchTol = double.Parse(raw);
 
     raw = Prompt($"Proteoform grouping tolerance in Da [{massTol}]");
     if (!string.IsNullOrWhiteSpace(raw)) massTol = double.Parse(raw);
@@ -73,28 +69,23 @@ string outputDir  = Path.Combine(Path.GetDirectoryName(inputPath)!, "BrainMie");
 Directory.CreateDirectory(outputDir);
 string baseName   = Path.GetFileNameWithoutExtension(inputPath);
 
-string outputPath      = Path.Combine(outputDir, baseName + ".corrected.csv");
-string proteoformPath  = Path.Combine(outputDir, baseName + ".proteoforms.csv");
-string spectralPath    = Path.Combine(outputDir, baseName + ".spectral_check.html");
-
-// ---- Auto-detect charge range from file -------------------------------------
-var (detectedMin, detectedMax) = DmtReader.ReadChargeRange(inputPath);
-int chargeMin = chargeMinOverride ?? detectedMin;
-int chargeMax = chargeMaxOverride ?? detectedMax;
+string outputPath     = Path.Combine(outputDir, baseName + ".corrected.csv");
+string proteoformPath = Path.Combine(outputDir, baseName + ".proteoforms.csv");
+string spectralPath   = Path.Combine(outputDir, baseName + ".spectral_check.html");
 
 // ---- Run pipeline -----------------------------------------------------------
-Console.WriteLine($"Input:   {inputPath}");
-Console.WriteLine($"Charges: {chargeMin}–{chargeMax}{(chargeMinOverride is null && chargeMaxOverride is null ? " (auto)" : " (override)")}  |  max gap: {maxGap}  |  {ppm} ppm  |  mass tol: {massTol} Da  |  min R²: {minR2}");
+Console.WriteLine($"Input:      {inputPath}");
+Console.WriteLine($"Parameters: max gap: {maxGap}  |  match tol: {massMatchTol} Da  |  mass tol: {massTol} Da  |  min R²: {minR2}");
 
 List<ProcessingRow> rows;
+List<(double Mz, int Charge, double? Intensity)> ions;
 try
 {
-    rows = Pipeline.ProcessDmt(
+    (rows, ions) = Pipeline.ProcessDmt(
         inputPath,
-        chargeRange:  (chargeMin, chargeMax),
         binWidth:     binWidth,
         maxGap:       maxGap,
-        ppmTolerance: ppm,
+        massMatchTol: massMatchTol,
         minFitR2:     minR2);
 }
 catch (Exception ex)
@@ -110,14 +101,14 @@ static string S(bool    b) => b ? "true" : "false";
 static string Q(string  s) => $"\"{s.Replace("\"", "\"\"")}\"";
 
 const string CsvHeader =
-    "Mz,Charge,Intensity,CentroidNeutralMass,IsotopicIndex,IsEstimated,IsSuppressed," +
+    "IsotopeMass,Intensity,CentroidNeutralMass,IsotopicIndex,IsEstimated,IsSuppressed," +
     "EstimatedIntensity,CorrectedIntensity,Uncertainty,Confidence,Hypothesis," +
     "FitRSquared,GapAtApex,ClusterIonCount,CorrectedIonCount,Notes";
 
 static void WriteRow(StreamWriter w, ProcessingRow row)
 {
     w.WriteLine(
-        $"{F(row.Mz)},{row.Charge},{F(row.Intensity)},{row.NeutralMass:G6}," +
+        $"{row.IsotopeMass:G6},{F(row.Intensity)},{row.NeutralMass:G6}," +
         $"{row.IsotopicIndex},{S(row.IsEstimated)},{S(row.IsSuppressed)}," +
         $"{F(row.EstimatedIntensity)},{F(row.CorrectedIntensity)}," +
         $"{F(row.Uncertainty)},{row.Confidence:G4},{row.Hypothesis}," +
@@ -125,7 +116,6 @@ static void WriteRow(StreamWriter w, ProcessingRow row)
         $"{row.ClusterIonCount:G6},{row.CorrectedIonCount:G6},{Q(row.Notes)}");
 }
 
-// All peaks: CorrectedIntensity populated for suppressed peaks, null otherwise.
 using (var w = new StreamWriter(outputPath))
 {
     w.WriteLine(CsvHeader);
@@ -134,13 +124,13 @@ using (var w = new StreamWriter(outputPath))
 }
 
 // ---- Write proteoform summary CSV ------------------------------------------
-var allProteoforms = ProteoformAggregator.Aggregate(rows, massTol);
+var allProteoforms = ProteoformAggregator.Aggregate(rows, ions, massTol);
 
 // Noise filter: drop proteoforms below 0.5% of the largest, or 100 ions — whichever is higher.
-double maxIons       = allProteoforms.Count > 0 ? allProteoforms.Max(pf => pf.TotalCorrectedIonCount) : 0;
-double noiseFloor    = Math.Max(maxIons * 0.005, 100.0);
-var    proteoforms   = allProteoforms.Where(pf => pf.TotalCorrectedIonCount >= noiseFloor).ToList();
-int    noisyRemoved  = allProteoforms.Count - proteoforms.Count;
+double maxIons      = allProteoforms.Count > 0 ? allProteoforms.Max(pf => pf.TotalCorrectedIonCount) : 0;
+double noiseFloor   = Math.Max(maxIons * 0.005, 100.0);
+var    proteoforms  = allProteoforms.Where(pf => pf.TotalCorrectedIonCount >= noiseFloor).ToList();
+int    noisyRemoved = allProteoforms.Count - proteoforms.Count;
 
 const string PfHeader =
     "CentroidNeutralMass,ChargeStates,ClusterCount,TotalObservedIonCount,TotalCorrectedIonCount," +
@@ -218,11 +208,9 @@ static void PrintHelp() => Console.WriteLine("""
       BrainMie                         (interactive prompts)
 
     Options:
-      --charge-min N    Override minimum charge state (default: auto-detected from file)
-      --charge-max N    Override maximum charge state (default: auto-detected from file)
       --max-gap N       Max consecutive missing isotope peaks per cluster (default 3)
-      --ppm N           m/z matching tolerance in ppm; Orbitrap: 5–10, Q-TOF: 10–20 (default 10)
-      --bin-width F     m/z bin width in Da for ion-event aggregation (default 0.02)
+      --match-tol F     Mass match tolerance in Da for isotope peak assignment (default 0.2)
+      --bin-width F     Mass bin width in Da for ion-event aggregation (default 0.02)
       --mass-tol F      Neutral-mass tolerance in Da for proteoform grouping (default 1.0)
       --min-r2 F        Minimum averagine fit R² to keep a cluster (default 0.5)
       -h, --help        Show this help

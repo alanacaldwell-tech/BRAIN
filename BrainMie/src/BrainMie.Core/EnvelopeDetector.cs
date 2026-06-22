@@ -3,25 +3,29 @@ namespace BrainMie.Core;
 using BrainMie.Core.Data;
 
 /// <summary>
-/// Bins individual ion detection events into peaks, then groups peaks into
-/// isotopic clusters — tolerating gaps of up to <c>maxGap</c> consecutive
+/// Bins individual ion detection events into peaks in neutral-mass space, then groups
+/// peaks into isotopic clusters — tolerating gaps of up to <c>maxGap</c> consecutive
 /// missing isotopes so that MIE-induced holes do not split one cluster into two.
+///
+/// Working in mass space (rather than m/z) keeps the isotope spacing constant at
+/// 1.003355 Da regardless of charge state, giving ~50 mass bins per isotope peak at
+/// 0.02 Da bin width. This makes each isotope peak robustly identifiable as a
+/// local maximum in the sparse bin list, even when the centroid peak is MIE-suppressed.
 /// </summary>
 public static class EnvelopeDetector
 {
     /// <summary>
-    /// Aggregate individual ion m/z values into (centre_mz, count) peaks by binning.
+    /// Aggregate individual neutral-mass values into (centre_mass, count) peaks by binning.
     /// </summary>
-    /// <param name="mzValues">Raw m/z values from the Ion table (one per detection event).</param>
-    /// <param name="binWidth">Bin width in Da. Should be much smaller than the isotope spacing (1/charge Da).</param>
-    public static List<(double Mz, double Intensity)> BinIons(
-        IEnumerable<double> mzValues, double binWidth = 0.005)
+    /// <param name="massValues">Neutral-mass values (one per detection event).</param>
+    /// <param name="binWidth">Bin width in Da. Should be much smaller than the isotope spacing (1.003355 Da).</param>
+    public static List<(double Mass, double Intensity)> BinIons(
+        IEnumerable<double> massValues, double binWidth = 0.02)
     {
         var bins = new Dictionary<long, double>();
-        foreach (double mz in mzValues)
+        foreach (double mass in massValues)
         {
-            // Math.Round uses banker's rounding (round-half-to-even), matching Python's round().
-            long key = (long)Math.Round(mz / binWidth);
+            long key = (long)Math.Round(mass / binWidth);
             bins[key] = bins.GetValueOrDefault(key) + 1.0;
         }
         return bins
@@ -40,15 +44,16 @@ public static class EnvelopeDetector
     ///      (list-index adjacency on the sorted sparse bin list).
     ///
     /// Because the bin list is sparse, list-index adjacency is intentional: two
-    /// real isotope peaks that are far apart in m/z are not adjacent in the list
-    /// and do not interfere with each other's local-max test, even at high charge
-    /// states where isotope spacing approaches the bin width.
+    /// real isotope peaks are not adjacent in the list and do not interfere with
+    /// each other's local-max test. In mass space with 0.02 Da bins and 1.003355 Da
+    /// isotope spacing there are ~50 bins per isotope peak, so suppressed peaks are
+    /// still reliably detected as local maxima within their own bin cluster.
     /// </summary>
-    /// <param name="bins">Sorted (by m/z) output of <see cref="BinIons"/>.</param>
+    /// <param name="bins">Sorted (by mass) output of <see cref="BinIons"/>.</param>
     /// <param name="minProminenceFraction">Fraction of the spectrum maximum below
     /// which a bin is unconditionally rejected. Default 0.1 %.</param>
-    public static List<(double Mz, double Intensity)> PickLocalMaxima(
-        List<(double Mz, double Intensity)> bins,
+    public static List<(double Mass, double Intensity)> PickLocalMaxima(
+        List<(double Mass, double Intensity)> bins,
         double minProminenceFraction = 0.001)
     {
         if (bins.Count == 0) return [];
@@ -56,7 +61,7 @@ public static class EnvelopeDetector
         double maxIntensity = bins.Max(b => b.Intensity);
         double threshold    = Math.Max(maxIntensity * minProminenceFraction, 2.0);
 
-        var peaks = new List<(double Mz, double Intensity)>();
+        var peaks = new List<(double Mass, double Intensity)>();
         for (int i = 0; i < bins.Count; i++)
         {
             if (bins[i].Intensity < threshold) continue;
@@ -71,23 +76,26 @@ public static class EnvelopeDetector
     }
 
     /// <summary>
-    /// Group (mz, intensity) peaks into isotopic clusters for a given charge state.
+    /// Group (mass, intensity) peaks into isotopic clusters using the constant
+    /// neutral-mass isotope spacing (1.003355 Da).
     /// </summary>
-    /// <param name="peaks">Observed peaks sorted (or unsorted) by m/z.</param>
-    /// <param name="charge">Charge state to use for expected isotope spacing.</param>
+    /// <param name="peaks">Observed peaks in neutral-mass space (any order).</param>
     /// <param name="maxGap">Maximum number of consecutive missing isotopes still treated as the same cluster.</param>
-    /// <param name="ppmTolerance">m/z tolerance in parts-per-million for matching peaks to isotope positions.</param>
+    /// <param name="massMatchTol">
+    /// Absolute mass tolerance in Da for matching peaks to isotope positions.
+    /// Default 0.2 Da (~20% of the isotope spacing), suitable for Orbitrap data across
+    /// the full 10–200 kDa range. This replaces the former per-charge ppm tolerance.
+    /// </param>
     public static List<IsotopicCluster> FindClusters(
-        List<(double Mz, double Intensity)> peaks,
-        int    charge,
-        int    maxGap        = 3,
-        double ppmTolerance  = 20.0)
+        List<(double Mass, double Intensity)> peaks,
+        int    maxGap       = 3,
+        double massMatchTol = 0.2)
     {
-        if (peaks.Count == 0 || charge <= 0) return [];
+        if (peaks.Count == 0) return [];
 
-        var sorted = peaks.OrderBy(p => p.Mz).ToList();
+        var sorted = peaks.OrderBy(p => p.Mass).ToList();
         int    n     = sorted.Count;
-        double delta = Constants.IsotopeSpacing / charge;
+        double delta = Constants.IsotopeSpacing;
 
         // ---- Union-Find with path compression --------------------------------
         int[] parent = Enumerable.Range(0, n).ToArray();
@@ -104,13 +112,12 @@ public static class EnvelopeDetector
         {
             for (int j = i + 1; j < n; j++)
             {
-                double diff = sorted[j].Mz - sorted[i].Mz;
+                double diff = sorted[j].Mass - sorted[i].Mass;
                 if (diff > (maxGap + 0.5) * delta) break;
 
-                double tol = Math.Max(sorted[i].Mz * ppmTolerance * 1e-6, 0.01);
                 for (int k = 1; k <= maxGap; k++)
                 {
-                    if (Math.Abs(diff - k * delta) < tol)
+                    if (Math.Abs(diff - k * delta) < massMatchTol)
                     {
                         Union(i, j);
                         break;
@@ -133,42 +140,41 @@ public static class EnvelopeDetector
         {
             if (indices.Count < 2) continue;
 
-            var compPeaks = indices.OrderBy(i => sorted[i].Mz)
+            var compPeaks = indices.OrderBy(i => sorted[i].Mass)
                                    .Select(i => sorted[i])
                                    .ToList();
-            double mzStart = compPeaks[0].Mz;
+            double massStart = compPeaks[0].Mass;
 
             // Assign integer isotope index relative to the first observed peak.
             // Merge any two binned peaks that round to the same index (sum intensities,
-            // intensity-weighted average m/z) so downstream dictionaries never see duplicates.
+            // intensity-weighted average mass) so downstream dictionaries never see duplicates.
             var indexed = compPeaks
-                .Select(p => (p.Mz, p.Intensity, IsotopeIndex: (int)Math.Round((p.Mz - mzStart) / delta)))
+                .Select(p => (p.Mass, p.Intensity, IsotopeIndex: (int)Math.Round((p.Mass - massStart) / delta)))
                 .GroupBy(p => p.IsotopeIndex)
                 .Select(g =>
                 {
                     double totalIntensity = g.Sum(p => p.Intensity);
-                    double weightedMz     = g.Sum(p => p.Mz * p.Intensity) / totalIntensity;
-                    return (Mz: weightedMz, Intensity: totalIntensity, IsotopeIndex: g.Key);
+                    double weightedMass   = g.Sum(p => p.Mass * p.Intensity) / totalIntensity;
+                    return (Mass: weightedMass, Intensity: totalIntensity, IsotopeIndex: g.Key);
                 })
                 .OrderBy(p => p.IsotopeIndex)
                 .ToList();
 
-            int            maxIdx      = indexed.Max(p => p.IsotopeIndex);
-            HashSet<int>   observedSet = indexed.Select(p => p.IsotopeIndex).ToHashSet();
-            List<int>      gapIndices  = Enumerable.Range(0, maxIdx + 1)
-                                                   .Where(i => !observedSet.Contains(i))
-                                                   .ToList();
+            int          maxIdx      = indexed.Max(p => p.IsotopeIndex);
+            HashSet<int> observedSet = indexed.Select(p => p.IsotopeIndex).ToHashSet();
+            List<int>    gapIndices  = Enumerable.Range(0, maxIdx + 1)
+                                                 .Where(i => !observedSet.Contains(i))
+                                                 .ToList();
 
-            // Experimental centroid mass: intensity-weighted average m/z across all isotope peaks.
+            // Centroid neutral mass: intensity-weighted average across all isotope peaks.
             double totalInt    = indexed.Sum(p => p.Intensity);
-            double centroidMz  = indexed.Sum(p => p.Mz * p.Intensity) / totalInt;
-            double neutralMass = centroidMz * charge - charge * Constants.HMass;
+            double neutralMass = indexed.Sum(p => p.Mass * p.Intensity) / totalInt;
 
             var observedPeaks = indexed
-                .Select(p => new ObservedPeak(p.Mz, p.Intensity, charge, p.IsotopeIndex))
+                .Select(p => new ObservedPeak(p.Mass, p.Intensity, p.IsotopeIndex))
                 .ToList();
 
-            clusters.Add(new IsotopicCluster(observedPeaks, charge, gapIndices, neutralMass));
+            clusters.Add(new IsotopicCluster(observedPeaks, gapIndices, neutralMass));
         }
 
         return clusters;

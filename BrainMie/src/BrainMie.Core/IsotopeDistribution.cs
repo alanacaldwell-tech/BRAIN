@@ -25,33 +25,30 @@ public static class IsotopeDistribution
     };
 
     /// <summary>
-    /// Compute the theoretical isotopic envelope for a molecule of <paramref name="neutralMass"/> Da
-    /// observed at charge state <paramref name="charge"/>.
+    /// Compute the theoretical isotopic envelope in neutral-mass space for a molecule
+    /// of <paramref name="neutralMass"/> Da.
     /// </summary>
-    /// <param name="neutralMass">Neutral monoisotopic mass in Da.</param>
-    /// <param name="charge">Charge state (must be > 0).</param>
+    /// <param name="neutralMass">Centroid neutral mass in Da.</param>
     /// <param name="nPeaks">Maximum number of isotope peaks to return.</param>
     /// <returns>
-    /// List of (Mz, NormalisedIntensity) tuples ordered by m/z. The most abundant
-    /// peak has intensity 1.0. Returns an empty list if the mass is invalid.
+    /// List of (Mass, NormalisedIntensity) tuples. Positions are
+    /// <c>neutralMass + k × IsotopeSpacing</c>. The most abundant peak has intensity 1.0.
+    /// Returns an empty list if the mass is invalid.
     /// </returns>
-    public static List<(double Mz, double Intensity)> ComputeEnvelope(
-        double neutralMass, int charge, int nPeaks = 25)
+    public static List<(double Mass, double Intensity)> ComputeMassEnvelope(
+        double neutralMass, int nPeaks = 25)
     {
-        if (neutralMass <= 0 || charge <= 0) return [];
+        if (neutralMass <= 0) return [];
 
-        var composition = Averagine.GetComposition(neutralMass);
-        double[] dist = ComputeDistribution(composition, nPeaks);
+        var    composition = Averagine.GetComposition(neutralMass);
+        double[] dist      = ComputeDistribution(composition, nPeaks);
 
         double maxInt = dist.Length > 0 ? dist.Max() : 0;
         if (maxInt <= 0) return [];
 
-        double mz0   = (neutralMass + charge * Constants.HMass) / charge;
-        double step  = Constants.IsotopeSpacing / charge;
-
-        var peaks = new List<(double Mz, double Intensity)>(dist.Length);
+        var peaks = new List<(double Mass, double Intensity)>(dist.Length);
         for (int k = 0; k < dist.Length; k++)
-            peaks.Add((mz0 + k * step, dist[k] / maxInt));
+            peaks.Add((neutralMass + k * Constants.IsotopeSpacing, dist[k] / maxInt));
 
         return peaks;
     }

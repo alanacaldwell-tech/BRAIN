@@ -65,21 +65,6 @@ public static class DmtReader
         return rows;
     }
 
-    /// <summary>
-    /// Return the (Min, Max) distinct charge states present in the Ion table.
-    /// </summary>
-    public static (int Min, int Max) ReadChargeRange(string filePath)
-    {
-        using var conn = OpenReadOnly(filePath);
-
-        using var cmd    = new SqliteCommand("SELECT MIN(Charge), MAX(Charge) FROM Ion", conn);
-        using var reader = cmd.ExecuteReader();
-        if (reader.Read() && !reader.IsDBNull(0))
-            return (reader.GetInt32(0), reader.GetInt32(1));
-
-        return (1, 10);
-    }
-
     private static List<string> GetColumnNames(SqliteConnection conn, string table)
     {
         var names = new List<string>();

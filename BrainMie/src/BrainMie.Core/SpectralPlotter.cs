@@ -10,24 +10,24 @@ using BrainMie.Core.Data;
 public static class SpectralPlotter
 {
     // SVG layout constants
-    private const int SvgW    = 400;
-    private const int SvgH    = 160;
-    private const int Left    = 36;
-    private const int Top     = 18;
-    private const int Right   = 8;
-    private const int Bottom  = 28;
-    private const int ChartW  = SvgW - Left - Right;
-    private const int ChartH  = SvgH - Top - Bottom;
+    private const int SvgW   = 400;
+    private const int SvgH   = 160;
+    private const int Left   = 36;
+    private const int Top    = 18;
+    private const int Right  = 8;
+    private const int Bottom = 28;
+    private const int ChartW = SvgW - Left - Right;
+    private const int ChartH = SvgH - Top - Bottom;
 
     /// <summary>
     /// Write an HTML spectral-check report to <paramref name="outputPath"/>.
-    /// Only clusters that contain at least one reconstructed peak are included,
+    /// Only clusters that contain at least one suppression-corrected peak are included,
     /// sorted by corrected ion count descending and capped at 200 charts.
     /// </summary>
     public static void GenerateHtml(List<ProcessingRow> rows, string outputPath, int nPeaks = 25)
     {
         var clusterGroups = rows
-            .GroupBy(r => (r.NeutralMass, r.Charge))
+            .GroupBy(r => r.NeutralMass)
             .Where(g => g.Any(r => r.IsSuppressed))
             .OrderByDescending(g => g.First().CorrectedIonCount)
             .Take(200)
@@ -54,7 +54,7 @@ public static class SpectralPlotter
                             "<span class='theo'>--- Theoretical averagine</span></p>");
             html.AppendLine("<div class='grid'>");
             foreach (var g in clusterGroups)
-                html.AppendLine(BuildCard(g.Key.NeutralMass, g.Key.Charge, g.ToList(), nPeaks));
+                html.AppendLine(BuildCard(g.Key, g.ToList(), nPeaks));
             html.AppendLine("</div>");
         }
 
@@ -64,26 +64,25 @@ public static class SpectralPlotter
 
     // -------------------------------------------------------------------------
 
-    private static string BuildCard(
-        double neutralMass, int charge, List<ProcessingRow> rows, int nPeaks)
+    private static string BuildCard(double neutralMass, List<ProcessingRow> rows, int nPeaks)
     {
-        var observed  = rows.OrderBy(r => r.IsotopicIndex).ToList();
+        var observed = rows.OrderBy(r => r.IsotopicIndex).ToList();
         if (observed.Count == 0) return "";
 
-        var first      = observed.First();
-        string hypo    = first.Hypothesis;
-        double conf    = first.Confidence;
-        double ions    = first.CorrectedIonCount;
+        var first = observed.First();
+        string hypo = first.Hypothesis;
+        double conf = first.Confidence;
+        double ions = first.CorrectedIonCount;
 
         int minIdx = observed.Min(r => r.IsotopicIndex);
         int maxIdx = observed.Max(r => r.IsotopicIndex);
         int nCols  = maxIdx - minIdx + 1;
         if (nCols < 1) return "";
 
-        // Theoretical envelope aligned to observed peaks
-        var theoretical = IsotopeDistribution.ComputeEnvelope(neutralMass, charge, nPeaks);
+        // Theoretical envelope in mass space
+        var theoretical = IsotopeDistribution.ComputeMassEnvelope(neutralMass, nPeaks);
         var obsPeaks    = observed
-            .Select(r => new ObservedPeak(r.Mz ?? 0, r.Intensity ?? 0, r.Charge, r.IsotopicIndex))
+            .Select(r => new ObservedPeak(r.IsotopeMass, r.Intensity ?? 0, r.IsotopicIndex))
             .ToList();
         var (offset, scale, _) = Classifier.FitAlignment(obsPeaks, theoretical);
 
@@ -114,7 +113,6 @@ public static class SpectralPlotter
             int ti = idx + offset;
             if (ti >= 0 && ti < theoretical.Count)
             {
-                // Scale theoretical so a perfect-fit cluster would overlay the bars exactly
                 double normTheo = scale * theoretical[ti].Intensity / norm;
                 double cx = Left + (idx - minIdx + 0.5) * ((double)ChartW / nCols);
                 theoPoints.Add($"{cx:F1},{ValY(normTheo):F1}");
@@ -133,22 +131,21 @@ public static class SpectralPlotter
             svg.AppendLine($"<text x='{x + BarW() / 2:F1}' y='{Top + ChartH + 14}' text-anchor='middle' font-size='9' fill='#777'>{r.IsotopicIndex}</text>");
         }
 
-        // Orange stacked segment: suppressed peaks — draws from top of blue bar up to corrected height
+        // Orange stacked segment: suppressed peaks — from top of blue bar up to corrected height
         foreach (var r in observed.Where(r => r.IsSuppressed))
         {
             double obsV  = (r.Intensity ?? 0) / norm;
             double corV  = (r.CorrectedIntensity ?? r.Intensity ?? 0) / norm;
             double delta = corV - obsV;
-            if (delta < 0.5 / ChartH) continue;  // sub-pixel, skip
+            if (delta < 0.5 / ChartH) continue;
             double x = ColX(r.IsotopicIndex);
-            // Draw segment from obsV to corV (i.e. y from ValY(corV) down to ValY(obsV))
             svg.AppendLine($"<rect x='{x:F1}' y='{ValY(corV):F1}' width='{BarW():F1}' height='{ValH(delta):F1}' fill='#ED7D31' opacity='0.9'/>");
         }
 
         svg.AppendLine("</svg>");
 
         string label = HypoLabel(hypo);
-        string title = $"centroid {neutralMass:F2} Da &nbsp;&nbsp; z={charge} &nbsp;&nbsp; " +
+        string title = $"centroid {neutralMass:F2} Da &nbsp;&nbsp; " +
                        $"<span class='badge {hypo}'>{label}</span> &nbsp;&nbsp; " +
                        $"conf: {conf:F2} &nbsp;&nbsp; {ions:N0} ions";
 

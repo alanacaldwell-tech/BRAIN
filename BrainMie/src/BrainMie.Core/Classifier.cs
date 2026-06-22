@@ -24,21 +24,21 @@ public static class Classifier
     /// </summary>
     public static ClassificationResult Classify(IsotopicCluster cluster, int nPeaks = 25)
     {
-        var theoretical = IsotopeDistribution.ComputeEnvelope(
-            cluster.NeutralMass, cluster.Charge, nPeaks);
+        var theoretical = IsotopeDistribution.ComputeMassEnvelope(cluster.NeutralMass, nPeaks);
 
         if (theoretical.Count == 0)
             return new ClassificationResult(
                 "ambiguous", 0.0, 0.0, false,
-                MaxConsecutiveGaps(cluster.GapIndices),
-                "Could not generate theoretical envelope for this mass/charge.");
+                MaxConsecutiveGaps(cluster.GapIndices), 0,
+                "Could not generate theoretical envelope for this mass.");
 
         var (offset, _, r2) = FitAlignment(cluster.Peaks, theoretical);
 
         if (cluster.GapIndices.Count == 0)
-            return new ClassificationResult("no_gap", 1.0, r2, false, 0);
-        bool apexInGap      = ApexInGaps(cluster.GapIndices, theoretical, offset);
-        int  nConsec        = MaxConsecutiveGaps(cluster.GapIndices);
+            return new ClassificationResult("no_gap", 1.0, r2, false, 0, offset);
+
+        bool apexInGap = ApexInGaps(cluster.GapIndices, theoretical, offset);
+        int  nConsec   = MaxConsecutiveGaps(cluster.GapIndices);
 
         // ---- Scoring ---------------------------------------------------------
         double mieScore = 0.0;
@@ -80,7 +80,7 @@ public static class Classifier
             notes.Add("gap is not at the apex — verify MIE assignment");
 
         return new ClassificationResult(
-            hypothesis, confidence, r2, apexInGap, nConsec,
+            hypothesis, confidence, r2, apexInGap, nConsec, offset,
             string.Join("; ", notes));
     }
 
@@ -105,8 +105,7 @@ public static class Classifier
             double suppressionThreshold = 0.5,
             int nPeaks = 25)
     {
-        var theoretical = IsotopeDistribution.ComputeEnvelope(
-            cluster.NeutralMass, cluster.Charge, nPeaks);
+        var theoretical = IsotopeDistribution.ComputeMassEnvelope(cluster.NeutralMass, nPeaks);
         if (theoretical.Count == 0) return [];
 
         // First pass: fit with all peaks
@@ -148,7 +147,7 @@ public static class Classifier
     }
 
     // ---------------------------------------------------------------------------
-    // Internal helpers (internal so Reconstructor can reuse FitAlignment)
+    // Internal helpers
     // ---------------------------------------------------------------------------
 
     /// <summary>
@@ -159,10 +158,10 @@ public static class Classifier
     /// that corresponds to cluster isotope index 0.</returns>
     internal static (int Offset, double Scale, double R2) FitAlignment(
         List<ObservedPeak> observed,
-        List<(double Mz, double Intensity)> theoretical)
+        List<(double Mass, double Intensity)> theoretical)
     {
-        var obs    = observed.ToDictionary(p => p.IsotopeIndex, p => p.Intensity);
-        int nTheo  = theoretical.Count;
+        var obs   = observed.ToDictionary(p => p.IsotopeIndex, p => p.Intensity);
+        int nTheo = theoretical.Count;
 
         double bestR2    = double.NegativeInfinity;
         int    bestOff   = 0;
@@ -194,7 +193,7 @@ public static class Classifier
 
     private static bool ApexInGaps(
         List<int> gapIndices,
-        List<(double Mz, double Intensity)> theoretical,
+        List<(double Mass, double Intensity)> theoretical,
         int offset)
     {
         if (gapIndices.Count == 0 || theoretical.Count == 0) return false;
@@ -210,7 +209,7 @@ public static class Classifier
     private static int MaxConsecutiveGaps(List<int> gaps)
     {
         if (gaps.Count == 0) return 0;
-        var sorted     = gaps.Order().ToList();
+        var sorted = gaps.Order().ToList();
         int maxRun = 1, run = 1;
         for (int i = 1; i < sorted.Count; i++)
         {

@@ -13,11 +13,16 @@ namespace BrainMie.Core.Data;
 /// <param name="FitRSquared">R² of the single-species averagine fit over observed peaks.</param>
 /// <param name="GapAtApex">Whether any gap falls at the theoretical intensity maximum.</param>
 /// <param name="NConsecutiveGaps">Longest run of consecutive missing isotope peaks.</param>
+/// <param name="FitOffset">
+/// Theoretical index that aligns to observed isotope index 0.
+/// Used by Pipeline to locate the theoretical apex in observed-index space.
+/// </param>
 /// <param name="Notes">Human-readable caveats (e.g. reconstruction reliability warnings).</param>
 public record ClassificationResult(
     string Hypothesis,
     double Confidence,
     double FitRSquared,
-    bool GapAtApex,
-    int NConsecutiveGaps,
+    bool   GapAtApex,
+    int    NConsecutiveGaps,
+    int    FitOffset,
     string Notes = "");
