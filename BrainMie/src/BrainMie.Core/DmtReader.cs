@@ -9,6 +9,18 @@ public static class DmtReader
 {
     private static readonly string[] OptionalColumns = ["Intensity", "RetentionTime", "ScanNumber"];
 
+    private static SqliteConnection OpenReadOnly(string filePath)
+    {
+        // Use the SQLite URI format with immutable=1 so the library never tries to
+        // create or lock WAL/journal files alongside the database. This avoids
+        // SQLITE_CANTOPEN (error 14) when the file is on a restricted path or is
+        // still held open by the acquisition software.
+        string uri = "file:" + filePath.Replace('\\', '/').Replace(" ", "%20") + "?mode=ro&immutable=1";
+        var conn = new SqliteConnection($"Data Source={uri}");
+        conn.Open();
+        return conn;
+    }
+
     /// <summary>
     /// Open <paramref name="filePath"/> and return every row from the Ion table.
     /// </summary>
@@ -24,14 +36,7 @@ public static class DmtReader
     {
         var rows = new List<(double Mz, int Charge, double? Intensity)>();
 
-        var builder = new SqliteConnectionStringBuilder
-        {
-            DataSource = filePath,
-            Mode = SqliteOpenMode.ReadOnly,
-        };
-
-        using var conn = new SqliteConnection(builder.ToString());
-        conn.Open();
+        using var conn = OpenReadOnly(filePath);
 
         var columnNames = GetColumnNames(conn, "Ion");
 
@@ -67,14 +72,7 @@ public static class DmtReader
     /// </summary>
     public static (int Min, int Max) ReadChargeRange(string filePath)
     {
-        var builder = new SqliteConnectionStringBuilder
-        {
-            DataSource = filePath,
-            Mode = SqliteOpenMode.ReadOnly,
-        };
-
-        using var conn = new SqliteConnection(builder.ToString());
-        conn.Open();
+        using var conn = OpenReadOnly(filePath);
 
         using var cmd    = new SqliteCommand("SELECT MIN(Charge), MAX(Charge) FROM Ion", conn);
         using var reader = cmd.ExecuteReader();
