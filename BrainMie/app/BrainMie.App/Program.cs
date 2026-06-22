@@ -67,9 +67,15 @@ if (!File.Exists(inputPath))
     return 1;
 }
 
-string outputPath      = Path.ChangeExtension(inputPath, ".corrected.csv");
-string proteoformPath  = Path.ChangeExtension(inputPath, ".proteoforms.csv");
-string spectralPath    = Path.ChangeExtension(inputPath, ".spectral_check.html");
+// Write all outputs to a BrainMie\ subdirectory so they never collide with
+// files from other analysis tools (e.g. ProteoformAnalyzer) in the same folder.
+string outputDir  = Path.Combine(Path.GetDirectoryName(inputPath)!, "BrainMie");
+Directory.CreateDirectory(outputDir);
+string baseName   = Path.GetFileNameWithoutExtension(inputPath);
+
+string outputPath      = Path.Combine(outputDir, baseName + ".corrected.csv");
+string proteoformPath  = Path.Combine(outputDir, baseName + ".proteoforms.csv");
+string spectralPath    = Path.Combine(outputDir, baseName + ".spectral_check.html");
 
 // ---- Auto-detect charge range from file -------------------------------------
 var (detectedMin, detectedMax) = DmtReader.ReadChargeRange(inputPath);
@@ -221,8 +227,8 @@ static void PrintHelp() => Console.WriteLine("""
       --min-r2 F        Minimum averagine fit R² to keep a cluster (default 0.5)
       -h, --help        Show this help
 
-    Output files written next to the input:
-      <input>.corrected.csv    All observed peaks; CorrectedIntensity column filled for suppressed peaks
-      <input>.proteoforms.csv  One row per proteoform, ion counts summed across charge states
+    Output files written to a BrainMie\ subfolder next to the input:
+      <input>.corrected.csv        All observed peaks; CorrectedIntensity filled for suppressed peaks
+      <input>.proteoforms.csv      One row per proteoform, ion counts summed across charge states
       <input>.spectral_check.html  SVG charts showing suppression correction per cluster
     """);
