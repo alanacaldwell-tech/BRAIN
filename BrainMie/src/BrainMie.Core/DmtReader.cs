@@ -7,8 +7,6 @@ using Microsoft.Data.Sqlite;
 /// </summary>
 public static class DmtReader
 {
-    private static readonly string[] OptionalColumns = ["Intensity", "RetentionTime", "ScanNumber"];
-
     private static SqliteConnection OpenReadOnly(string filePath)
     {
         // Use the SQLite URI format with immutable=1 so the library never tries to
@@ -82,7 +80,7 @@ public static class DmtReader
         return (1, 10);
     }
 
-    private static IReadOnlyList<string> GetColumnNames(SqliteConnection conn, string table)
+    private static List<string> GetColumnNames(SqliteConnection conn, string table)
     {
         var names = new List<string>();
         using var cmd    = new SqliteCommand($"PRAGMA table_info({table})", conn);
