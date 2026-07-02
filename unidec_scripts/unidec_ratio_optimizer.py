@@ -189,8 +189,11 @@ class Params:
     int_hi_B:  float = 23900.0
 
     # --- gaussian-mode + quality-metric settings ---
-    centroidA_expected: float = 23411.8   # test antibody light chain (Da)
-    centroidB_expected: float = 23658.7   # internal-standard light chain (Da)
+    # NOTE: 23411.8 / 23658.7 are the MONOISOTOPIC masses; at ~23.5 kDa the
+    # observed (deconvolved) centroid sits near the average mass, so we keep the
+    # rounded values as window centers. peak_half_window (±20 Da) covers the gap.
+    centroidA_expected: float = 23412.0   # test antibody light chain (Da)
+    centroidB_expected: float = 23658.0   # internal-standard light chain (Da)
     peak_half_window:   float = 20.0   # Da; narrow window around each centroid
 
     def key_str(self):
@@ -780,14 +783,94 @@ def group_by_concentration(files, pattern=None):
     return groups, ungrouped
 
 
+def evaluate_group(p: Params, files: list[str], args) -> dict | None:
+    """
+    Evaluate ONE parameter set across a concentration group's replicates.
+
+    Returns both the cross-replicate %CV of the A/B ratio AND the mean peak-fit
+    quality (used as a floor so a degenerate low-CV set where A and B merged
+    can't win). None if fewer than 2 replicates give a usable ratio.
+    """
+    ratios, quals, per_file = [], [], []
+    for path in files:
+        fname = os.path.basename(path)
+        try:
+            mass, inten, ratio, aA, aB, bl, r2 = deconvolve_one(
+                path, p, args.verbose, reuse=not args.fresh_engine)
+        except Exception as exc:
+            per_file.append((fname, np.nan, np.nan, np.nan, np.nan, np.nan))
+            if args.verbose:
+                print(f"      [WARN] {fname}: {exc}")
+            continue
+        q = peak_quality(mass, inten, p, args.verbose)
+        ratios.append(ratio)
+        quals.append(q["scoreQ"] if q else np.nan)
+        per_file.append((fname, ratio, aA, aB, bl, r2))
+
+    ratios = np.array(ratios, float)
+    good   = ratios[np.isfinite(ratios) & (ratios > 0)]
+    if good.size < 2:
+        return None
+
+    mean_r = float(np.mean(good))
+    std_r  = float(np.std(good, ddof=1))
+    cv     = 100.0 * std_r / mean_r
+    quals  = np.array(quals, float)
+    has_q  = bool(np.isfinite(quals).any())
+    return dict(cv_percent=cv, mean_ratio=mean_r, std_ratio=std_r,
+                n_good=int(good.size),
+                mean_quality=float(np.nanmean(quals)) if has_q else np.nan,
+                min_quality=float(np.nanmin(quals)) if has_q else np.nan,
+                per_file=per_file)
+
+
+def _robust_pick(items, cv_of, q_of, args):
+    """
+    Overfitting-resistant selection from a list of candidates.
+
+    1. Apply a peak-quality floor (drop candidates whose quality < args.quality_floor);
+       if that empties the pool (or quality is unavailable), keep all candidates.
+    2. Among candidates within args.cv_margin (fractional) of the best %CV,
+       pick the one with the HIGHEST quality -- i.e. don't chase a razor-thin,
+       possibly-overfit CV minimum; among near-best-CV sets take the cleanest,
+       which is more likely to generalise to a future single sample.
+
+    Returns the chosen item, or None if `items` is empty.
+    """
+    if not items:
+        return None
+    qs = [q_of(it) for it in items]
+    have_q = any(np.isfinite(q) for q in qs)
+
+    pool = items
+    if have_q and args.quality_floor is not None:
+        filt = [it for it in items
+                if np.isfinite(q_of(it)) and q_of(it) >= args.quality_floor]
+        if filt:
+            pool = filt
+
+    best_cv = min(cv_of(it) for it in pool)
+    thresh  = best_cv * (1.0 + args.cv_margin)
+    near    = [it for it in pool if cv_of(it) <= thresh + 1e-12]
+    if have_q:
+        return max(near, key=lambda it: q_of(it) if np.isfinite(q_of(it)) else -1.0)
+    return min(near, key=cv_of)
+
+
 def optimise_by_concentration(files, args):
     """
-    For each concentration group (>=2 replicates), sweep the grid and keep the
-    parameter set with the lowest cross-replicate %CV of the A/B ratio.
+    Sweep the grid once per concentration group and report TWO answers side by
+    side:
 
-    Returns winners = [(conc, group_files, Params, res, rows), ...] where
-    `res` is the evaluate() summary for the winning set and `rows` is the full
-    ranked sweep for that group (for the audit CSV).
+      * PER-CONCENTRATION: for each concentration, the (robustly selected)
+        parameter set that minimises that concentration's cross-replicate %CV.
+      * SHARED: one parameter set that works across ALL concentrations at once
+        (minimises the aggregated within-concentration %CV). This is the more
+        overfitting-resistant answer, since it is fit against every replicate
+        of every concentration rather than the 2-3 replicates of one group.
+
+    Both use _robust_pick (quality floor + CV-margin -> highest quality).
+    Returns a result dict consumed by write_outputs / print_report.
     """
     pattern = re.compile(args.conc_pattern, re.IGNORECASE) if args.conc_pattern else _CONC_RE
     groups, ungrouped = group_by_concentration(files, pattern)
@@ -797,49 +880,77 @@ def optimise_by_concentration(files, args):
         for p in ungrouped:
             print(f"        {os.path.basename(p)}")
         print()
-
     if not groups:
         raise SystemExit(
             "No concentration tokens found. Expected a filename part like "
             "'1p00e-4'. Override the pattern with --conc-pattern if needed.")
 
+    usable  = [c for c in sorted(groups, key=lambda c: (conc_to_float(c) or 0.0, c))
+               if len(groups[c]) >= 2]
+    skipped = [c for c in groups if len(groups[c]) < 2]
+    for c in skipped:
+        print(f"[WARN] {c}: only {len(groups[c])} replicate; need >=2 for a CV. Skipping.")
+    if not usable:
+        raise SystemExit("No concentration group has >=2 replicates.")
+
     grid = build_grid(args)
-    print(f"[BY-CONCENTRATION] {len(groups)} concentration group(s), "
-          f"{len(grid)} parameter sets each:")
-    for conc in sorted(groups, key=lambda c: (conc_to_float(c) or 0.0, c)):
-        print(f"        {conc:<12} {len(groups[conc])} replicate(s): "
-              + ", ".join(os.path.basename(p) for p in groups[conc]))
+    print(f"[BY-CONCENTRATION] {len(usable)} usable concentration(s) × "
+          f"{len(grid)} parameter sets:")
+    for c in usable:
+        print(f"        {c:<12} {len(groups[c])} replicate(s)")
     print()
 
-    winners = []
-    for conc in sorted(groups, key=lambda c: (conc_to_float(c) or 0.0, c)):
-        gfiles = groups[conc]
-        if len(gfiles) < 2:
-            print(f"  [WARN] {conc}: only {len(gfiles)} replicate; "
-                  f"cannot compute a cross-replicate CV. Skipping.")
-            continue
+    # matrix[conc][pid] = evaluate_group result (or None)
+    matrix = {c: {} for c in usable}
+    for c in usable:
+        gfiles = groups[c]
+        print(f"  sweeping concentration {c} ...")
+        for pid, p in enumerate(grid):
+            matrix[c][pid] = evaluate_group(p, gfiles, args)
 
-        rows = []
-        for p in grid:
-            res = evaluate(p, gfiles, args)   # cross-replicate CV within group
-            if res is not None:
-                rows.append((p, res))
+    # --- per-concentration winners ---
+    per_conc = {}
+    for c in usable:
+        rows = [(pid, grid[pid], res) for pid, res in matrix[c].items() if res]
         if not rows:
-            print(f"  [WARN] {conc}: all parameter sets failed.")
+            print(f"  [WARN] {c}: all parameter sets failed.")
             continue
+        pid, p, res = _robust_pick(
+            rows, cv_of=lambda it: it[2]["cv_percent"],
+            q_of=lambda it: it[2]["mean_quality"], args=args)
+        per_conc[c] = (pid, p, res, rows)
+        print(f"  [per-conc] {c:<12} CV={res['cv_percent']:.2f}%  "
+              f"ratio={res['mean_ratio']:.3f}  Q={res['mean_quality']:.3f}")
 
-        # Objective within a concentration: lowest %CV. No ratio band here,
-        # since each concentration has its own (unknown) true A/B ratio.
-        rows.sort(key=lambda pr: pr[1]["cv_percent"])
-        wp, wr = rows[0]
-        winners.append((conc, gfiles, wp, wr, rows))
-        print(f"  {conc:<12} best CV={wr['cv_percent']:.2f}%  "
-              f"ratio={wr['mean_ratio']:.3f}  (n={wr['n_good']})  | {wp.key_str()}")
+    # --- shared winner: a pid present (non-None) in EVERY usable concentration ---
+    shared_cands = []
+    for pid, p in enumerate(grid):
+        reslist = [matrix[c].get(pid) for c in usable]
+        if any(r is None for r in reslist):
+            continue
+        cvs   = np.array([r["cv_percent"]  for r in reslist], float)
+        quals = np.array([r["mean_quality"] for r in reslist], float)
+        shared_cands.append(dict(
+            pid=pid, p=p,
+            agg_cv=float(np.mean(cvs)), worst_cv=float(np.max(cvs)),
+            mean_quality=float(np.nanmean(quals)) if np.isfinite(quals).any() else np.nan,
+            per_conc={c: matrix[c][pid] for c in usable}))
+    if not shared_cands:
+        print("[WARN] no single parameter set succeeded on every concentration; "
+              "shared-conditions result unavailable.")
+        shared = None
+    else:
+        shared = _robust_pick(
+            shared_cands, cv_of=lambda it: it["agg_cv"],
+            q_of=lambda it: it["mean_quality"], args=args)
+        print(f"\n  [shared]  agg CV={shared['agg_cv']:.2f}%  "
+              f"(worst {shared['worst_cv']:.2f}%)  Q={shared['mean_quality']:.3f}  "
+              f"| {shared['p'].key_str()}")
 
-    if not winners:
-        raise SystemExit("No concentration group could be optimised "
-                         "(need >=2 replicates per group).")
-    return winners
+    return dict(usable=usable, skipped=skipped, groups=groups, grid=grid,
+                matrix=matrix, per_conc=per_conc, shared=shared,
+                ungrouped=ungrouped,
+                _qfloor=args.quality_floor, _cvmargin=args.cv_margin)
 
 
 # ---------------------------------------------------------------------------
@@ -1055,89 +1166,188 @@ def write_outputs_quality(rows, winner, basis, args):
 # Output writing — BY-CONCENTRATION
 # ---------------------------------------------------------------------------
 
-def write_outputs_by_concentration(winners, args):
+def _linfit_r2(x, y):
+    """Linear fit y=slope*x+intercept; return (slope, intercept, r2) or Nones."""
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    if x.size < 2 or np.ptp(x) == 0:
+        return None, None, None
+    slope, intercept = np.polyfit(x, y, 1)
+    yhat = slope * x + intercept
+    ss_res = float(np.sum((y - yhat) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    return float(slope), float(intercept), float(r2)
+
+
+def write_outputs_by_concentration(result, args):
     os.makedirs(args.out, exist_ok=True)
+    usable  = result["usable"]
+    matrix  = result["matrix"]
+    per_conc = result["per_conc"]         # conc -> (pid, p, res, rows)
+    shared   = result["shared"]           # dict or None
+    fmt = lambda x: f"{x:.5g}" if np.isfinite(x) else "NA"
 
-    # One winning parameter set per concentration
-    best_path = os.path.join(args.out, "by_concentration_best.csv")
-    with open(best_path, "w", newline="") as fh:
+    def sh_res(c):
+        return shared["per_conc"][c] if shared else None
+
+    # --- side-by-side comparison (the headline) ---
+    cmp_path = os.path.join(args.out, "comparison.csv")
+    with open(cmp_path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["concentration","conc_value","best_cv_percent","mean_ratio",
-                    "std_ratio","n_good"] + _PARAM_COLS)
-        for conc, gfiles, p, res, rows in winners:
-            cv = conc_to_float(conc)
-            w.writerow([conc, f"{cv:.6g}" if cv is not None else "NA",
-                        f"{res['cv_percent']:.3f}", f"{res['mean_ratio']:.4f}",
-                        f"{res['std_ratio']:.4f}", res["n_good"]] + _param_row(p))
+        w.writerow(["concentration","conc_value",
+                    "perconc_cv","perconc_ratio","perconc_quality",
+                    "shared_cv","shared_ratio","shared_quality",
+                    "params_differ"])
+        for c in usable:
+            pc = per_conc.get(c)
+            sr = sh_res(c)
+            cv = conc_to_float(c)
+            differ = ("NA" if (pc is None or shared is None)
+                      else str(pc[1].key_str() != shared["p"].key_str()))
+            row = [c, f"{cv:.6g}" if cv is not None else "NA"]
+            row += ([fmt(pc[2]["cv_percent"]), fmt(pc[2]["mean_ratio"]),
+                     fmt(pc[2]["mean_quality"])] if pc else ["NA","NA","NA"])
+            row += ([fmt(sr["cv_percent"]), fmt(sr["mean_ratio"]),
+                     fmt(sr["mean_quality"])] if sr else ["NA","NA","NA"])
+            row += [differ]
+            w.writerow(row)
 
-    # Per-replicate ratios under each concentration's winner
-    perfile_path = os.path.join(args.out, "by_concentration_per_file.csv")
+    # --- per-concentration winning params ---
+    perconc_path = os.path.join(args.out, "per_concentration_best.csv")
+    with open(perconc_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["concentration","conc_value","cv_percent","mean_ratio",
+                    "mean_quality","n_good"] + _PARAM_COLS)
+        for c in usable:
+            pc = per_conc.get(c)
+            if not pc:
+                continue
+            _pid, p, res, _rows = pc
+            cv = conc_to_float(c)
+            w.writerow([c, f"{cv:.6g}" if cv is not None else "NA",
+                        f"{res['cv_percent']:.3f}", f"{res['mean_ratio']:.4f}",
+                        f"{res['mean_quality']:.4f}", res["n_good"]] + _param_row(p))
+
+    # --- shared conditions (single set) + calibration linearity ---
+    shared_path = os.path.join(args.out, "shared_conditions.csv")
+    sh_slope = sh_int = sh_r2 = None
+    if shared:
+        xs = [conc_to_float(c) for c in usable if conc_to_float(c) is not None]
+        ys = [shared["per_conc"][c]["mean_ratio"] for c in usable
+              if conc_to_float(c) is not None]
+        sh_slope, sh_int, sh_r2 = _linfit_r2(xs, ys)
+        with open(shared_path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["agg_cv_percent","worst_cv_percent","mean_quality",
+                        "calibration_slope","calibration_intercept",
+                        "calibration_r2"] + _PARAM_COLS)
+            w.writerow([f"{shared['agg_cv']:.3f}", f"{shared['worst_cv']:.3f}",
+                        f"{shared['mean_quality']:.4f}",
+                        fmt(sh_slope) if sh_slope is not None else "NA",
+                        fmt(sh_int) if sh_int is not None else "NA",
+                        fmt(sh_r2) if sh_r2 is not None else "NA"]
+                       + _param_row(shared["p"]))
+    else:
+        shared_path = None
+
+    # --- per-replicate ratios (both selections) ---
+    perfile_path = os.path.join(args.out, "per_file_ratios.csv")
     with open(perfile_path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["concentration","file","ratio_A_over_B","area_A","area_B",
-                    "baseline","r2"])
-        for conc, gfiles, p, res, rows in winners:
-            for name, ratio, aA, aB, bl, r2 in res["per_file"]:
-                fmt = lambda x: f"{x:.5g}" if np.isfinite(x) else "NA"
-                w.writerow([conc, name, fmt(ratio), fmt(aA), fmt(aB),
-                            fmt(bl), fmt(r2)])
+        w.writerow(["selection","concentration","file","ratio_A_over_B",
+                    "area_A","area_B","baseline","r2"])
+        for c in usable:
+            pc = per_conc.get(c)
+            if pc:
+                for name, ratio, aA, aB, bl, r2 in pc[2]["per_file"]:
+                    w.writerow(["per_conc", c, name, fmt(ratio), fmt(aA),
+                                fmt(aB), fmt(bl), fmt(r2)])
+            if shared:
+                for name, ratio, aA, aB, bl, r2 in shared["per_conc"][c]["per_file"]:
+                    w.writerow(["shared", c, name, fmt(ratio), fmt(aA),
+                                fmt(aB), fmt(bl), fmt(r2)])
 
-    # Winning config per concentration (JSON)
-    best_json = os.path.join(args.out, "best_config_by_concentration.json")
-    with open(best_json, "w") as fh:
+    # --- JSON configs ---
+    json_perconc = os.path.join(args.out, "best_config_by_concentration.json")
+    with open(json_perconc, "w") as fh:
         json.dump({
-            conc: {
-                "conc_value": conc_to_float(conc),
-                "summary": {k: v for k, v in res.items() if k != "per_file"},
-                "params": asdict(p),
-            }
-            for conc, gfiles, p, res, rows in winners
+            c: {"conc_value": conc_to_float(c),
+                "summary": {k: v for k, v in per_conc[c][2].items() if k != "per_file"},
+                "params": asdict(per_conc[c][1])}
+            for c in usable if per_conc.get(c)
         }, fh, indent=2)
 
-    # Full audit: every (concentration, param set) tried
+    json_shared = None
+    if shared:
+        json_shared = os.path.join(args.out, "best_config_shared.json")
+        with open(json_shared, "w") as fh:
+            json.dump({
+                "agg_cv_percent": shared["agg_cv"],
+                "worst_cv_percent": shared["worst_cv"],
+                "mean_quality": shared["mean_quality"],
+                "calibration": {"slope": sh_slope, "intercept": sh_int, "r2": sh_r2},
+                "per_concentration": {
+                    c: {k: v for k, v in shared["per_conc"][c].items() if k != "per_file"}
+                    for c in usable},
+                "params": asdict(shared["p"]),
+            }, fh, indent=2)
+
+    # --- full audit: every (concentration, param set) ---
     full_path = os.path.join(args.out, "by_concentration_sweep_full.csv")
     with open(full_path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["concentration","cv_percent","mean_ratio","std_ratio",
+        w.writerow(["concentration","cv_percent","mean_ratio","mean_quality",
                     "n_good"] + _PARAM_COLS)
-        for conc, gfiles, p, res, rows in winners:
-            for pp, rr in sorted(rows, key=lambda pr: pr[1]["cv_percent"]):
-                w.writerow([conc, f"{rr['cv_percent']:.3f}",
-                            f"{rr['mean_ratio']:.4f}", f"{rr['std_ratio']:.4f}",
-                            rr["n_good"]] + _param_row(pp))
+        for c in usable:
+            rows = [(pid, res) for pid, res in matrix[c].items() if res]
+            for pid, res in sorted(rows, key=lambda t: t[1]["cv_percent"]):
+                w.writerow([c, f"{res['cv_percent']:.3f}",
+                            f"{res['mean_ratio']:.4f}",
+                            f"{res['mean_quality']:.4f}", res["n_good"]]
+                           + _param_row(result["grid"][pid]))
 
-    # Plot: ratio vs concentration (the point of a concentration series)
+    # --- plot: per-conc vs shared calibration curves ---
     plot_path = None
     if _HAVE_MPL:
         try:
-            pts = [(conc_to_float(conc), res["mean_ratio"], res["std_ratio"],
-                    res["cv_percent"])
-                   for conc, _, _, res, _ in winners
-                   if conc_to_float(conc) is not None]
-            pts.sort(key=lambda t: t[0])
-            if pts:
-                xs  = [t[0] for t in pts]
-                ys  = [t[1] for t in pts]
-                yer = [t[2] for t in pts]
-                fig, ax = plt.subplots(figsize=(7, 5))
-                ax.errorbar(xs, ys, yerr=yer, fmt="o-", color="#185FA5",
-                            capsize=3, label="mean A/B ± SD")
-                ax.set_xscale("log")
-                ax.set_xlabel("Concentration (µg/mL)")
-                ax.set_ylabel("A/B ratio (per-concentration optimum)")
-                ax.set_title("A/B ratio vs concentration")
-                for x, y, _, cv in pts:
-                    ax.annotate(f"CV {cv:.1f}%", (x, y), fontsize=7,
-                                textcoords="offset points", xytext=(4, 5))
-                ax.legend(fontsize=8)
-                fig.tight_layout()
-                plot_path = os.path.join(args.out, "ratio_vs_concentration.png")
-                fig.savefig(plot_path, dpi=140)
-                plt.close(fig)
+            fig, ax = plt.subplots(figsize=(7.5, 5))
+            xs_pc = [conc_to_float(c) for c in usable if per_conc.get(c)
+                     and conc_to_float(c) is not None]
+            ys_pc = [per_conc[c][2]["mean_ratio"] for c in usable if per_conc.get(c)
+                     and conc_to_float(c) is not None]
+            er_pc = [per_conc[c][2]["std_ratio"] for c in usable if per_conc.get(c)
+                     and conc_to_float(c) is not None]
+            if xs_pc:
+                ax.errorbar(xs_pc, ys_pc, yerr=er_pc, fmt="o", color="#1D9E75",
+                            capsize=3, label="per-concentration optimum")
+            if shared:
+                xs_s = [conc_to_float(c) for c in usable if conc_to_float(c) is not None]
+                ys_s = [shared["per_conc"][c]["mean_ratio"] for c in usable
+                        if conc_to_float(c) is not None]
+                er_s = [shared["per_conc"][c]["std_ratio"] for c in usable
+                        if conc_to_float(c) is not None]
+                order = np.argsort(xs_s)
+                xs_s = list(np.array(xs_s)[order]); ys_s = list(np.array(ys_s)[order])
+                er_s = list(np.array(er_s)[order])
+                ax.errorbar(xs_s, ys_s, yerr=er_s, fmt="s-", color="#185FA5",
+                            capsize=3, label="shared conditions")
+                if sh_slope is not None:
+                    xx = np.array([min(xs_s), max(xs_s)])
+                    ax.plot(xx, sh_slope * xx + sh_int, "--", color="crimson",
+                            lw=1, label=f"linear fit R²={sh_r2:.3f}")
+            ax.set_xlabel("Concentration (µg/mL)")
+            ax.set_ylabel("A/B ratio (test / internal standard)")
+            ax.set_title("Calibration: per-concentration vs shared conditions")
+            ax.legend(fontsize=8)
+            fig.tight_layout()
+            plot_path = os.path.join(args.out, "ratio_vs_concentration.png")
+            fig.savefig(plot_path, dpi=140)
+            plt.close(fig)
         except Exception:
             pass
 
-    return best_path, best_json, perfile_path, full_path, plot_path
+    return (cmp_path, perconc_path, shared_path, perfile_path,
+            json_perconc, json_shared, full_path, plot_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1240,23 +1450,46 @@ def print_report_per_file(winners):
     print("="*70)
 
 
-def print_report_by_concentration(winners):
+def print_report_by_concentration(result):
+    usable   = result["usable"]
+    per_conc = result["per_conc"]
+    shared   = result["shared"]
+
     print("\n" + "="*70)
-    print("PER-CONCENTRATION WINNERS (minimise within-group cross-replicate %CV)")
+    print("BY-CONCENTRATION — per-concentration vs shared conditions")
     print("="*70)
-    for conc, gfiles, p, res, rows in winners:
-        print(f"\n  Concentration {conc}  (n={res['n_good']})")
-        print(f"    Best %CV      : {res['cv_percent']:.2f}%")
-        print(f"    Mean A/B ratio: {res['mean_ratio']:.3f}")
-        print(f"    Params        : zzsig={p.zzsig} psig={p.psig} beta={p.beta} "
-              f"mzsig={p.mzsig} sub={p.subtype}/{p.subbuff} smooth={p.smooth}")
-        for name, ratio, _, _, bl, _ in res["per_file"]:
-            s = f"{ratio:.3f}" if np.isfinite(ratio) else "FAILED"
-            print(f"      {name:<40} {s}")
+
+    # Side-by-side table
+    print(f"\n  {'conc':<10} {'per-conc CV':>12} {'ratio':>8}   "
+          f"{'shared CV':>10} {'ratio':>8}   {'params differ':>13}")
+    for c in usable:
+        pc = per_conc.get(c)
+        sr = shared["per_conc"][c] if shared else None
+        pc_cv = f"{pc[2]['cv_percent']:.2f}%" if pc else "NA"
+        pc_r  = f"{pc[2]['mean_ratio']:.3f}"   if pc else "NA"
+        sh_cv = f"{sr['cv_percent']:.2f}%"     if sr else "NA"
+        sh_r  = f"{sr['mean_ratio']:.3f}"      if sr else "NA"
+        differ = ("NA" if (pc is None or shared is None)
+                  else ("yes" if pc[1].key_str() != shared["p"].key_str() else "no"))
+        print(f"  {c:<10} {pc_cv:>12} {pc_r:>8}   {sh_cv:>10} {sh_r:>8}   {differ:>13}")
+
+    if shared:
+        wp = shared["p"]
+        print(f"\n  SHARED conditions (one set for all concentrations):")
+        print(f"    agg CV {shared['agg_cv']:.2f}%  (worst {shared['worst_cv']:.2f}%)  "
+              f"mean Q {shared['mean_quality']:.3f}")
+        print(f"    zzsig={wp.zzsig} psig={wp.psig} beta={wp.beta} mzsig={wp.mzsig} "
+              f"smooth={wp.smooth} sub={wp.subtype}/{wp.subbuff}")
+
     print()
-    print("  ⚠  Each concentration is optimised independently, so the winning")
-    print("     parameters may differ between concentrations. Inspect the mass")
-    print("     spectra and the ratio_vs_concentration.png trend before use.")
+    print("  Selection: quality floor + within CV-margin -> highest quality")
+    print(f"    (--quality-floor {result.get('_qfloor','?')}, "
+          f"--cv-margin {result.get('_cvmargin','?')})")
+    print("  ⚠  With 2-3 replicates the per-concentration CV is a fragile target;")
+    print("     the SHARED result is fit against every replicate and is the more")
+    print("     trustworthy basis for future single-sample runs. If 'params")
+    print("     differ' is 'no' across the board, the shared set is clearly right.")
+    print("     Check ratio_vs_concentration.png for calibration linearity.")
     print("="*70)
 
 
@@ -1298,9 +1531,19 @@ def parse_args(argv=None):
     ap.add_argument("--conc-pattern", default=None, dest="conc_pattern",
                     help="Regex for the concentration token (default matches "
                          r"forms like '1p00e-4'/'2e-4').")
-    ap.add_argument("--centroidA",   type=float, default=23411.8,
+    ap.add_argument("--quality-floor", type=float, default=0.5, dest="quality_floor",
+                    help="(by-concentration) minimum mean peak-fit quality a "
+                         "parameter set must reach to be eligible; guards against "
+                         "degenerate low-CV winners where A and B merged "
+                         "(default 0.5). Set 0 to disable.")
+    ap.add_argument("--cv-margin", type=float, default=0.25, dest="cv_margin",
+                    help="(by-concentration) among sets within this fractional "
+                         "margin of the best %%CV, pick the highest-quality one "
+                         "rather than the razor-thin CV minimum (default 0.25 = "
+                         "within 25%%). Improves generalisation.")
+    ap.add_argument("--centroidA",   type=float, default=23412.0,
                     help="Test antibody light-chain mass (Da). Ratio is A/B.")
-    ap.add_argument("--centroidB",   type=float, default=23658.7,
+    ap.add_argument("--centroidB",   type=float, default=23658.0,
                     help="Internal-standard light-chain mass (Da).")
     ap.add_argument("--target-ratio",type=float, default=3.0, dest="target_ratio")
     ap.add_argument("--ratio-band",  type=float, nargs=2,
@@ -1362,9 +1605,9 @@ def main(argv=None):
 
     try:
         if args.by_concentration:
-            winners = optimise_by_concentration(files, args)
-            paths = write_outputs_by_concentration(winners, args)
-            print_report_by_concentration(winners)
+            result = optimise_by_concentration(files, args)
+            paths = write_outputs_by_concentration(result, args)
+            print_report_by_concentration(result)
         elif args.cv_mode:
             rows, winner, basis = optimise(files, args)
             paths = write_outputs(rows, winner, basis, args)

@@ -61,25 +61,37 @@ file's own peak-fit quality.
 python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --per-file
 ```
 
-### By-concentration (`--by-concentration`) — CV within each concentration
-For a concentration series with 2–3 replicates each. Files are grouped by a
-concentration token in the filename, and **within each concentration** the
-program finds the parameter set that minimises the cross-replicate %CV of the
-A/B ratio. You get **one winning parameter set per concentration**.
+### By-concentration (`--by-concentration`) — the calibration workflow
+For a concentration series with 2–3 replicates each (test light chain 23412 Da
+vs internal-standard light chain 23658 Da; ratio = test/IS). Files are grouped
+by a concentration token in the filename, and the program reports **two answers
+side by side**:
+
+- **Per-concentration:** for each concentration, the parameter set minimising
+  that concentration's cross-replicate %CV.
+- **Shared:** one parameter set that minimises the *aggregated* within-
+  concentration %CV across **all** concentrations at once.
+
+The shared result is the more trustworthy basis for future single-sample runs:
+with only 2–3 replicates, a per-concentration CV minimum is a fragile target
+prone to overfitting, whereas the shared set is fit against every replicate of
+every concentration. The per-concentration answer is kept as a **drift
+diagnostic** — if the winning parameters barely change across concentrations,
+the shared set is clearly right.
+
+Both use an overfitting-resistant selection: a **peak-quality floor**
+(`--quality-floor`, default 0.5) excludes degenerate sets where A and B merged,
+and among sets within a **CV margin** of the best (`--cv-margin`, default 0.25 =
+25%) it picks the *highest-quality* one rather than the razor-thin minimum.
 
 The token is scientific notation with `p` as the decimal point, e.g.
-`1p00e-4` → 1.0e-4 µg/mL, `2e-4` → 2e-4 µg/mL. Files sharing a token are
-treated as replicates of the same concentration; files with no token are
-reported and excluded. Override the pattern with `--conc-pattern` if your
-naming differs.
+`1p00e-4` → 1.0e-4 µg/mL. Files sharing a token are replicates; files with no
+token are reported and excluded (override with `--conc-pattern`). No ratio band
+is applied — each concentration has its own true ratio.
 
 ```bash
 python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --by-concentration
 ```
-
-No ratio band is applied here — each concentration has its own (unknown) true
-A/B ratio, so the only objective is minimising that concentration's replicate
-CV.
 
 ### Legacy %CV objective (`--cv-mode`)
 One shared set minimising cross-replicate %CV across *all* files (ignores
@@ -142,10 +154,13 @@ quality, with a `cv_percent` column), `best_config.json`, `best_per_file.csv`
 + quality), `best_config_per_file.json`, `per_file_sweep_full.csv` (full audit
 of every trial), `per_file_ratios.png`.
 
-**`--by-concentration`** → `by_concentration_best.csv` (one winning set per
-concentration), `best_config_by_concentration.json`,
-`by_concentration_per_file.csv` (per-replicate ratios under each winner),
-`by_concentration_sweep_full.csv` (full audit), `ratio_vs_concentration.png`.
+**`--by-concentration`** → `comparison.csv` (headline: per-concentration vs
+shared CV/ratio, and whether params differ), `per_concentration_best.csv`,
+`shared_conditions.csv` (the single shared set + calibration slope/intercept/R²),
+`best_config_by_concentration.json`, `best_config_shared.json`,
+`per_file_ratios.csv` (per-replicate ratios for both selections),
+`by_concentration_sweep_full.csv` (full audit), `ratio_vs_concentration.png`
+(per-concentration vs shared calibration curves with linear-fit R²).
 
 **`--cv-mode`** → `sweep_results.csv`, `best_config.json`, `best_per_file.csv`,
 `ratio_vs_cv.png`.
