@@ -81,7 +81,7 @@ OUTPUTS (--cv-mode)
 """
 
 from __future__ import annotations
-import argparse, csv, itertools, json, os, sys, traceback, warnings
+import argparse, csv, itertools, json, os, re, sys, traceback, warnings
 from dataclasses import dataclass, asdict, field
 import numpy as np
 
@@ -710,6 +710,105 @@ def optimise_global_quality(files: list[str], args):
 
 
 # ---------------------------------------------------------------------------
+# BY-CONCENTRATION mode: group replicates by a filename token, minimise the
+# cross-replicate %CV WITHIN each concentration group (one winner per group)
+# ---------------------------------------------------------------------------
+
+# Matches a scientific-notation concentration token such as "1p00e-4", "2e-4",
+# "10p0e-5"  (mantissa, optional 'p' decimal, 'e', optional sign, exponent).
+_CONC_RE = re.compile(r"\d+(?:p\d+)?e[-+]?\d+", re.IGNORECASE)
+
+
+def parse_concentration(fname: str, pattern: re.Pattern | None = None):
+    """Return the (lower-cased) concentration token in a filename, or None."""
+    m = (pattern or _CONC_RE).search(fname)
+    return m.group(0).lower() if m else None
+
+
+def conc_to_float(token: str):
+    """Convert a token like '1p00e-4' to the float 1e-4 (None if unparseable)."""
+    try:
+        return float(token.replace("p", "."))
+    except (ValueError, AttributeError):
+        return None
+
+
+def group_by_concentration(files, pattern=None):
+    """Group file paths by concentration token. Returns (groups, ungrouped)."""
+    groups: dict[str, list[str]] = {}
+    ungrouped: list[str] = []
+    for path in files:
+        key = parse_concentration(os.path.basename(path), pattern)
+        if key is None:
+            ungrouped.append(path)
+        else:
+            groups.setdefault(key, []).append(path)
+    return groups, ungrouped
+
+
+def optimise_by_concentration(files, args):
+    """
+    For each concentration group (>=2 replicates), sweep the grid and keep the
+    parameter set with the lowest cross-replicate %CV of the A/B ratio.
+
+    Returns winners = [(conc, group_files, Params, res, rows), ...] where
+    `res` is the evaluate() summary for the winning set and `rows` is the full
+    ranked sweep for that group (for the audit CSV).
+    """
+    pattern = re.compile(args.conc_pattern, re.IGNORECASE) if args.conc_pattern else _CONC_RE
+    groups, ungrouped = group_by_concentration(files, pattern)
+
+    if ungrouped:
+        print("[WARN] no concentration token found in these files (excluded):")
+        for p in ungrouped:
+            print(f"        {os.path.basename(p)}")
+        print()
+
+    if not groups:
+        raise SystemExit(
+            "No concentration tokens found. Expected a filename part like "
+            "'1p00e-4'. Override the pattern with --conc-pattern if needed.")
+
+    grid = build_grid(args)
+    print(f"[BY-CONCENTRATION] {len(groups)} concentration group(s), "
+          f"{len(grid)} parameter sets each:")
+    for conc in sorted(groups, key=lambda c: (conc_to_float(c) or 0.0, c)):
+        print(f"        {conc:<12} {len(groups[conc])} replicate(s): "
+              + ", ".join(os.path.basename(p) for p in groups[conc]))
+    print()
+
+    winners = []
+    for conc in sorted(groups, key=lambda c: (conc_to_float(c) or 0.0, c)):
+        gfiles = groups[conc]
+        if len(gfiles) < 2:
+            print(f"  [WARN] {conc}: only {len(gfiles)} replicate; "
+                  f"cannot compute a cross-replicate CV. Skipping.")
+            continue
+
+        rows = []
+        for p in grid:
+            res = evaluate(p, gfiles, args)   # cross-replicate CV within group
+            if res is not None:
+                rows.append((p, res))
+        if not rows:
+            print(f"  [WARN] {conc}: all parameter sets failed.")
+            continue
+
+        # Objective within a concentration: lowest %CV. No ratio band here,
+        # since each concentration has its own (unknown) true A/B ratio.
+        rows.sort(key=lambda pr: pr[1]["cv_percent"])
+        wp, wr = rows[0]
+        winners.append((conc, gfiles, wp, wr, rows))
+        print(f"  {conc:<12} best CV={wr['cv_percent']:.2f}%  "
+              f"ratio={wr['mean_ratio']:.3f}  (n={wr['n_good']})  | {wp.key_str()}")
+
+    if not winners:
+        raise SystemExit("No concentration group could be optimised "
+                         "(need >=2 replicates per group).")
+    return winners
+
+
+# ---------------------------------------------------------------------------
 # Output writing — GLOBAL (%CV mode)
 # ---------------------------------------------------------------------------
 
@@ -919,6 +1018,95 @@ def write_outputs_quality(rows, winner, basis, args):
 
 
 # ---------------------------------------------------------------------------
+# Output writing — BY-CONCENTRATION
+# ---------------------------------------------------------------------------
+
+def write_outputs_by_concentration(winners, args):
+    os.makedirs(args.out, exist_ok=True)
+
+    # One winning parameter set per concentration
+    best_path = os.path.join(args.out, "by_concentration_best.csv")
+    with open(best_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["concentration","conc_value","best_cv_percent","mean_ratio",
+                    "std_ratio","n_good"] + _PARAM_COLS)
+        for conc, gfiles, p, res, rows in winners:
+            cv = conc_to_float(conc)
+            w.writerow([conc, f"{cv:.6g}" if cv is not None else "NA",
+                        f"{res['cv_percent']:.3f}", f"{res['mean_ratio']:.4f}",
+                        f"{res['std_ratio']:.4f}", res["n_good"]] + _param_row(p))
+
+    # Per-replicate ratios under each concentration's winner
+    perfile_path = os.path.join(args.out, "by_concentration_per_file.csv")
+    with open(perfile_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["concentration","file","ratio_A_over_B","area_A","area_B",
+                    "baseline","r2"])
+        for conc, gfiles, p, res, rows in winners:
+            for name, ratio, aA, aB, bl, r2 in res["per_file"]:
+                fmt = lambda x: f"{x:.5g}" if np.isfinite(x) else "NA"
+                w.writerow([conc, name, fmt(ratio), fmt(aA), fmt(aB),
+                            fmt(bl), fmt(r2)])
+
+    # Winning config per concentration (JSON)
+    best_json = os.path.join(args.out, "best_config_by_concentration.json")
+    with open(best_json, "w") as fh:
+        json.dump({
+            conc: {
+                "conc_value": conc_to_float(conc),
+                "summary": {k: v for k, v in res.items() if k != "per_file"},
+                "params": asdict(p),
+            }
+            for conc, gfiles, p, res, rows in winners
+        }, fh, indent=2)
+
+    # Full audit: every (concentration, param set) tried
+    full_path = os.path.join(args.out, "by_concentration_sweep_full.csv")
+    with open(full_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["concentration","cv_percent","mean_ratio","std_ratio",
+                    "n_good"] + _PARAM_COLS)
+        for conc, gfiles, p, res, rows in winners:
+            for pp, rr in sorted(rows, key=lambda pr: pr[1]["cv_percent"]):
+                w.writerow([conc, f"{rr['cv_percent']:.3f}",
+                            f"{rr['mean_ratio']:.4f}", f"{rr['std_ratio']:.4f}",
+                            rr["n_good"]] + _param_row(pp))
+
+    # Plot: ratio vs concentration (the point of a concentration series)
+    plot_path = None
+    if _HAVE_MPL:
+        try:
+            pts = [(conc_to_float(conc), res["mean_ratio"], res["std_ratio"],
+                    res["cv_percent"])
+                   for conc, _, _, res, _ in winners
+                   if conc_to_float(conc) is not None]
+            pts.sort(key=lambda t: t[0])
+            if pts:
+                xs  = [t[0] for t in pts]
+                ys  = [t[1] for t in pts]
+                yer = [t[2] for t in pts]
+                fig, ax = plt.subplots(figsize=(7, 5))
+                ax.errorbar(xs, ys, yerr=yer, fmt="o-", color="#185FA5",
+                            capsize=3, label="mean A/B ± SD")
+                ax.set_xscale("log")
+                ax.set_xlabel("Concentration (µg/mL)")
+                ax.set_ylabel("A/B ratio (per-concentration optimum)")
+                ax.set_title("A/B ratio vs concentration")
+                for x, y, _, cv in pts:
+                    ax.annotate(f"CV {cv:.1f}%", (x, y), fontsize=7,
+                                textcoords="offset points", xytext=(4, 5))
+                ax.legend(fontsize=8)
+                fig.tight_layout()
+                plot_path = os.path.join(args.out, "ratio_vs_concentration.png")
+                fig.savefig(plot_path, dpi=140)
+                plt.close(fig)
+        except Exception:
+            pass
+
+    return best_path, best_json, perfile_path, full_path, plot_path
+
+
+# ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
 
@@ -1018,6 +1206,26 @@ def print_report_per_file(winners):
     print("="*70)
 
 
+def print_report_by_concentration(winners):
+    print("\n" + "="*70)
+    print("PER-CONCENTRATION WINNERS (minimise within-group cross-replicate %CV)")
+    print("="*70)
+    for conc, gfiles, p, res, rows in winners:
+        print(f"\n  Concentration {conc}  (n={res['n_good']})")
+        print(f"    Best %CV      : {res['cv_percent']:.2f}%")
+        print(f"    Mean A/B ratio: {res['mean_ratio']:.3f}")
+        print(f"    Params        : zzsig={p.zzsig} psig={p.psig} beta={p.beta} "
+              f"mzsig={p.mzsig} sub={p.subtype}/{p.subbuff} smooth={p.smooth}")
+        for name, ratio, _, _, bl, _ in res["per_file"]:
+            s = f"{ratio:.3f}" if np.isfinite(ratio) else "FAILED"
+            print(f"      {name:<40} {s}")
+    print()
+    print("  ⚠  Each concentration is optimised independently, so the winning")
+    print("     parameters may differ between concentrations. Inspect the mass")
+    print("     spectra and the ratio_vs_concentration.png trend before use.")
+    print("="*70)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1037,6 +1245,15 @@ def parse_args(argv=None):
                     help="Legacy objective: one shared parameter set that "
                          "minimises cross-replicate %%CV of the A/B ratio "
                          "(instead of the default quality objective).")
+    ap.add_argument("--by-concentration", action="store_true",
+                    dest="by_concentration",
+                    help="Group replicates by a concentration token in the "
+                         "filename (e.g. '1p00e-4') and, WITHIN each "
+                         "concentration, find the parameter set that minimises "
+                         "cross-replicate %%CV. One winner per concentration.")
+    ap.add_argument("--conc-pattern", default=None, dest="conc_pattern",
+                    help="Regex for the concentration token (default matches "
+                         r"forms like '1p00e-4'/'2e-4').")
     ap.add_argument("--centroidA",   type=float, default=23412.0)
     ap.add_argument("--centroidB",   type=float, default=23658.0)
     ap.add_argument("--target-ratio",type=float, default=3.0, dest="target_ratio")
@@ -1086,7 +1303,11 @@ def main(argv=None):
         print(f"  {os.path.basename(f)}")
     print()
 
-    if args.cv_mode:
+    if args.by_concentration:
+        winners = optimise_by_concentration(files, args)
+        paths = write_outputs_by_concentration(winners, args)
+        print_report_by_concentration(winners)
+    elif args.cv_mode:
         rows, winner, basis = optimise(files, args)
         paths = write_outputs(rows, winner, basis, args)
         print_report(winner, basis)

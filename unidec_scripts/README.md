@@ -61,9 +61,29 @@ file's own peak-fit quality.
 python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --per-file
 ```
 
+### By-concentration (`--by-concentration`) — CV within each concentration
+For a concentration series with 2–3 replicates each. Files are grouped by a
+concentration token in the filename, and **within each concentration** the
+program finds the parameter set that minimises the cross-replicate %CV of the
+A/B ratio. You get **one winning parameter set per concentration**.
+
+The token is scientific notation with `p` as the decimal point, e.g.
+`1p00e-4` → 1.0e-4 µg/mL, `2e-4` → 2e-4 µg/mL. Files sharing a token are
+treated as replicates of the same concentration; files with no token are
+reported and excluded. Override the pattern with `--conc-pattern` if your
+naming differs.
+
+```bash
+python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --by-concentration
+```
+
+No ratio band is applied here — each concentration has its own (unknown) true
+A/B ratio, so the only objective is minimising that concentration's replicate
+CV.
+
 ### Legacy %CV objective (`--cv-mode`)
-The original objective — one shared set minimising cross-replicate %CV of the
-ratio. Retained but off by default.
+One shared set minimising cross-replicate %CV across *all* files (ignores
+concentration). Retained but off by default.
 
 ```bash
 python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --cv-mode
@@ -95,6 +115,11 @@ the winner), `quality_vs_ratio.png`.
 **`--per-file`** → `per_file_optimized.csv` (each file's own best params + ratio
 + quality), `best_config_per_file.json`, `per_file_sweep_full.csv` (full audit
 of every trial), `per_file_ratios.png`.
+
+**`--by-concentration`** → `by_concentration_best.csv` (one winning set per
+concentration), `best_config_by_concentration.json`,
+`by_concentration_per_file.csv` (per-replicate ratios under each winner),
+`by_concentration_sweep_full.csv` (full audit), `ratio_vs_concentration.png`.
 
 **`--cv-mode`** → `sweep_results.csv`, `best_config.json`, `best_per_file.csv`,
 `ratio_vs_cv.png`.
