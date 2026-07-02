@@ -5,18 +5,26 @@ unidec_ratio_optimizer.py  –  v3 (UniDec 8.2.1, confirmed API)
 Sweeps UniDec deconvolution parameters across replicate .raw files to quantify
 the ratio between two protein species (A ~23410 Da, B ~23660 Da, ~250 Da apart).
 
-Two optimisation modes
+Optimisation objective
 -----------------------
-  GLOBAL (default):   find ONE parameter set that minimises the cross-replicate
-                      %CV of the A/B ratio. Best when you want a single
-                      reproducible pipeline setting applied to every file.
+The objective is UniDec PROCESSING QUALITY: how cleanly the two species (A, B)
+deconvolve into well-shaped, well-separated peaks. This is scored by a metric
+that is deliberately INDEPENDENT of the ratio VALUE, so tuning the processing
+conditions cannot bias the quantitation -- see peak_quality().
 
-  PER-FILE (--per-file):  optimise parameters SEPARATELY for each .raw file,
-                      scoring by peak-fit QUALITY rather than cross-replicate
-                      %CV (which is undefined once every file uses different
-                      parameters). The quality metric is deliberately
-                      independent of the ratio VALUE so per-file tuning cannot
-                      bias the quantitation -- see peak_quality().
+Three modes
+-----------
+  QUALITY, shared (default):  find ONE parameter set that maximises the MEAN
+                      peak-fit quality across all files. Use this to pick a
+                      single best set of UniDec processing conditions.
+
+  QUALITY, per-file (--per-file):  optimise parameters SEPARATELY for each
+                      .raw file, each maximising that file's own peak-fit
+                      quality.
+
+  %CV (--cv-mode):    the legacy objective -- find ONE parameter set that
+                      minimises the cross-replicate %CV of the A/B ratio.
+                      Retained but off by default.
 
 What changed vs v2  (driven by real-data feedback)
 --------------------------------------------------
@@ -40,28 +48,36 @@ Real API entry:     import unidec.engine as engine; u = engine.UniDec()
 
 USAGE
 -----
-  # GLOBAL, one shared parameter set (minimise cross-replicate %CV):
+  # DEFAULT: one shared set of UniDec conditions, maximise mean quality:
   python unidec_ratio_optimizer.py --data "D:\\path\\to\\data" --out results
 
-  # PER-FILE, optimise each replicate independently by peak-fit quality:
+  # PER-FILE: optimise each replicate independently by peak-fit quality:
   python unidec_ratio_optimizer.py --data "D:\\..." --out results --per-file
 
-  # quick first-pass grid (16 combos):
+  # LEGACY %CV objective:
+  python unidec_ratio_optimizer.py --data "D:\\..." --out results --cv-mode
+
+  # quick first-pass grid (16 combos), any mode:
   python unidec_ratio_optimizer.py --data "D:\\..." --out results --quick
 
-OUTPUTS (global mode)
----------------------
-  sweep_results.csv        all parameter sets ranked by %CV
-  best_config.json         winning parameters
-  best_per_file.csv        per-replicate A/B ratio for the winner
-  ratio_vs_cv.png          scatter of CV vs ratio
+OUTPUTS (default quality mode)
+------------------------------
+  quality_sweep_results.csv  all parameter sets ranked by mean quality
+  best_config.json           winning parameters
+  best_per_file.csv          per-file ratio + quality for the winner
+  quality_vs_ratio.png       scatter of quality vs ratio
 
-OUTPUTS (per-file mode)
------------------------
-  per_file_optimized.csv   each file's own best params + ratio + quality
+OUTPUTS (--per-file)
+--------------------
+  per_file_optimized.csv     each file's own best params + ratio + quality
   best_config_per_file.json  winning params per file
-  per_file_sweep_full.csv  full audit: every (file, param set) tried
-  per_file_ratios.png      per-file ratio bar chart
+  per_file_sweep_full.csv    full audit: every (file, param set) tried
+  per_file_ratios.png        per-file ratio bar chart
+
+OUTPUTS (--cv-mode)
+-------------------
+  sweep_results.csv          all parameter sets ranked by %CV
+  best_config.json / best_per_file.csv / ratio_vs_cv.png
 """
 
 from __future__ import annotations
@@ -634,7 +650,67 @@ def optimise_per_file(files: list[str], args):
 
 
 # ---------------------------------------------------------------------------
-# Output writing — GLOBAL
+# QUALITY mode (default): one shared parameter set, maximise mean peak quality
+# ---------------------------------------------------------------------------
+
+def evaluate_quality(p: Params, files: list[str], args) -> dict | None:
+    """Aggregate peak-fit quality of ONE param set across all files."""
+    per_file, quals = [], []
+    for path in files:
+        fname = os.path.basename(path)
+        res = evaluate_per_file(p, path, args)
+        per_file.append((fname, res))
+        if res is not None:
+            quals.append(res["quality"])
+
+    if len(quals) < max(2, int(0.5 * len(files))):
+        return None
+
+    quals  = np.array(quals, float)
+    ratios = np.array([r["ratio"] for _, r in per_file if r is not None], float)
+    mean_ratio = float(np.mean(ratios)) if ratios.size else float("nan")
+    std_ratio  = float(np.std(ratios, ddof=1)) if ratios.size > 1 else 0.0
+    desc_cv    = 100.0 * std_ratio / mean_ratio if mean_ratio else float("nan")
+
+    return dict(mean_quality=float(np.mean(quals)),
+                min_quality=float(np.min(quals)),
+                n_good=int(quals.size),
+                mean_ratio=mean_ratio, std_ratio=std_ratio,
+                desc_cv=desc_cv, per_file=per_file)
+
+
+def optimise_global_quality(files: list[str], args):
+    grid = build_grid(args)
+    n = len(grid)
+    print(f"[QUALITY] Sweeping {n} parameter sets × {len(files)} files "
+          f"= {n*len(files)} deconvolutions")
+    print("Objective: maximise MEAN peak-fit quality (one shared parameter set).")
+    print()
+
+    rows = []
+    for i, p in enumerate(grid, 1):
+        res = evaluate_quality(p, files, args)
+        if res is None:
+            continue
+        rows.append((p, res))
+        if args.verbose or i % max(1, n // 20) == 0:
+            print(f"  [{i:>4}/{n}] Q={res['mean_quality']:.3f} "
+                  f"(worst {res['min_quality']:.3f})  ratio={res['mean_ratio']:.3f}"
+                  f"  | {p.key_str()}")
+
+    if not rows:
+        raise SystemExit("All parameter sets failed. Check file paths and UniDec install.")
+
+    # Rank by mean quality; tie-break by the worst single file's quality.
+    rows.sort(key=lambda pr: (pr[1]["mean_quality"], pr[1]["min_quality"]),
+              reverse=True)
+    winner = rows[0]
+    basis  = "highest mean peak-fit quality across files (one shared set)"
+    return rows, winner, basis
+
+
+# ---------------------------------------------------------------------------
+# Output writing — GLOBAL (%CV mode)
 # ---------------------------------------------------------------------------
 
 def write_outputs(rows, winner, basis, args):
@@ -780,6 +856,69 @@ def write_outputs_per_file(winners, full_records, args):
 
 
 # ---------------------------------------------------------------------------
+# Output writing — QUALITY (default)
+# ---------------------------------------------------------------------------
+
+def write_outputs_quality(rows, winner, basis, args):
+    os.makedirs(args.out, exist_ok=True)
+    wp, wr = winner
+
+    sweep_path = os.path.join(args.out, "quality_sweep_results.csv")
+    with open(sweep_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["rank","mean_quality","min_quality","mean_ratio",
+                    "descriptive_cv_percent","n_good"] + _PARAM_COLS)
+        for rank, (p, r) in enumerate(rows, 1):
+            w.writerow([rank, f"{r['mean_quality']:.4f}", f"{r['min_quality']:.4f}",
+                        f"{r['mean_ratio']:.4f}", f"{r['desc_cv']:.3f}",
+                        r["n_good"]] + _param_row(p))
+
+    best_json = os.path.join(args.out, "best_config.json")
+    with open(best_json, "w") as fh:
+        json.dump({
+            "selection_basis": basis,
+            "summary": {k: v for k, v in wr.items() if k != "per_file"},
+            "params": asdict(wp),
+        }, fh, indent=2)
+
+    perfile_path = os.path.join(args.out, "best_per_file.csv")
+    with open(perfile_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["file","ratio_A_over_B","area_A","area_B","quality",
+                    "separation","fitR2_A","fitR2_B"])
+        for fname, r in wr["per_file"]:
+            if r is None:
+                w.writerow([fname,"NA","NA","NA","NA","NA","NA","NA"])
+                continue
+            fmt = lambda x: f"{x:.5g}" if np.isfinite(x) else "NA"
+            w.writerow([fname, fmt(r["ratio"]), fmt(r["aA"]), fmt(r["aB"]),
+                        f"{r['quality']:.4f}", f"{r['sep']:.4f}",
+                        f"{r['r2A']:.4f}", f"{r['r2B']:.4f}"])
+
+    plot_path = None
+    if _HAVE_MPL:
+        try:
+            qs = [r["mean_quality"] for _, r in rows]
+            rr = [r["mean_ratio"]   for _, r in rows]
+            fig, ax = plt.subplots(figsize=(7, 5))
+            ax.scatter(rr, qs, s=18, alpha=0.55, label="all param sets")
+            ax.scatter([wr["mean_ratio"]], [wr["mean_quality"]], s=160,
+                       marker="*", color="crimson", zorder=6, label="winner")
+            ax.set_xlabel("Mean A/B ratio")
+            ax.set_ylabel("Mean peak-fit quality")
+            ax.set_title("UniDec parameter sweep: quality vs ratio")
+            ax.legend(fontsize=8)
+            fig.tight_layout()
+            plot_path = os.path.join(args.out, "quality_vs_ratio.png")
+            fig.savefig(plot_path, dpi=140)
+            plt.close(fig)
+        except Exception:
+            pass
+
+    return sweep_path, best_json, perfile_path, plot_path
+
+
+# ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
 
@@ -815,6 +954,40 @@ def print_report(winner, basis):
     print("  ⚠  Always visually inspect the winning mass spectrum.")
     print("     A low CV achieved by over-smoothing A and B into one peak")
     print("     is a false win. Confirm both peaks are cleanly separated.")
+    print("="*70)
+
+
+def print_report_quality(winner, basis):
+    wp, wr = winner
+    print("\n" + "="*70)
+    print("WINNER (quality — one shared parameter set)")
+    print("="*70)
+    print(f"  Basis          : {basis}")
+    print(f"  Mean quality   : {wr['mean_quality']:.3f}  "
+          f"(worst file {wr['min_quality']:.3f})")
+    print(f"  Mean A/B ratio : {wr['mean_ratio']:.3f}")
+    print(f"  Descriptive CV : {wr['desc_cv']:.2f}%  (reported only, NOT optimised)")
+    print(f"  Files used     : {wr['n_good']}")
+    print(f"\n  massbins       : {wp.massbins}")
+    print(f"  mzsig          : {wp.mzsig}")
+    print(f"  zzsig (charge) : {wp.zzsig}")
+    print(f"  psig  (point)  : {wp.psig}")
+    print(f"  beta           : {wp.beta}")
+    print(f"  subtype        : {wp.subtype}  (0=none, 1=curved, 2=linear)")
+    print(f"  subbuff        : {wp.subbuff}")
+    print(f"  smooth         : {wp.smooth}")
+    print(f"  integration    : {wp.integration_mode}")
+    print()
+    print("  Per-file under the winning conditions:")
+    for fname, r in wr["per_file"]:
+        if r is None:
+            print(f"    {fname:<38} FAILED")
+            continue
+        print(f"    {fname:<38} ratio={r['ratio']:.3f}  Q={r['quality']:.3f} "
+              f"(sep={r['sep']:.2f}, R²A={r['r2A']:.2f}, R²B={r['r2B']:.2f})")
+    print()
+    print("  ⚠  Quality rewards clean, well-separated A and B peaks, but always")
+    print("     visually confirm the winning mass spectrum before trusting it.")
     print("="*70)
 
 
@@ -857,9 +1030,13 @@ def parse_args(argv=None):
                     help="Folder containing replicate .raw files")
     ap.add_argument("--out",   default="unidec_ratio_results")
     ap.add_argument("--per-file", action="store_true", dest="per_file",
-                    help="Optimise parameters SEPARATELY for each file "
-                         "(scored by peak-fit quality) instead of one shared "
-                         "parameter set minimising cross-replicate %%CV.")
+                    help="Optimise parameters SEPARATELY for each file, each "
+                         "maximising that file's own peak-fit quality "
+                         "(default optimises one shared set by MEAN quality).")
+    ap.add_argument("--cv-mode", action="store_true", dest="cv_mode",
+                    help="Legacy objective: one shared parameter set that "
+                         "minimises cross-replicate %%CV of the A/B ratio "
+                         "(instead of the default quality objective).")
     ap.add_argument("--centroidA",   type=float, default=23412.0)
     ap.add_argument("--centroidB",   type=float, default=23658.0)
     ap.add_argument("--target-ratio",type=float, default=3.0, dest="target_ratio")
@@ -909,22 +1086,23 @@ def main(argv=None):
         print(f"  {os.path.basename(f)}")
     print()
 
-    if args.per_file:
-        winners, full_records = optimise_per_file(files, args)
-        opt, best, full, plot = write_outputs_per_file(winners, full_records, args)
-        print_report_per_file(winners)
-        print(f"\nOutputs written to {args.out}\\")
-        for pth in (opt, best, full, plot):
-            if pth:
-                print(f"  {os.path.basename(pth)}")
-    else:
+    if args.cv_mode:
         rows, winner, basis = optimise(files, args)
-        sweep, best, perfile, plot = write_outputs(rows, winner, basis, args)
+        paths = write_outputs(rows, winner, basis, args)
         print_report(winner, basis)
-        print(f"\nOutputs written to {args.out}\\")
-        for pth in (sweep, best, perfile, plot):
-            if pth:
-                print(f"  {os.path.basename(pth)}")
+    elif args.per_file:
+        winners, full_records = optimise_per_file(files, args)
+        paths = write_outputs_per_file(winners, full_records, args)
+        print_report_per_file(winners)
+    else:
+        rows, winner, basis = optimise_global_quality(files, args)
+        paths = write_outputs_quality(rows, winner, basis, args)
+        print_report_quality(winner, basis)
+
+    print(f"\nOutputs written to {args.out}\\")
+    for pth in paths:
+        if pth:
+            print(f"  {os.path.basename(pth)}")
 
 
 if __name__ == "__main__":

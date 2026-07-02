@@ -27,13 +27,26 @@ Integrates the raw m/z signal directly, per charge state, in a safe zone
 python mz_ratio_direct.py --data /path/to/raw_folder --out results_direct
 ```
 
-## `unidec_ratio_optimizer.py` — deconvolution + parameter sweep
+## `unidec_ratio_optimizer.py` — optimise UniDec processing conditions
 
-Runs UniDec and sweeps deconvolution parameters. Two modes:
+Runs UniDec and sweeps its processing parameters. The **objective is peak-fit
+quality** — how cleanly A and B deconvolve into well-shaped, well-separated
+peaks:
 
-### Global (default) — one shared parameter set
-Finds the single parameter set that minimises the cross-replicate **%CV** of
-the A/B ratio.
+```
+quality = 0.5 * separation + 0.25 * (fitR2_A + fitR2_B)
+```
+
+- `separation` = `1 - valley/min(apexA, apexB)` — trough depth between the two
+  fitted peaks. Penalises over-smoothing that merges A and B (a false win).
+- `fitR2_A/B` = goodness of a local Gaussian+baseline fit to each peak.
+
+The metric never looks at the ratio value, so tuning the conditions **cannot
+bias the quantitation**.
+
+### Default — one shared set of conditions (maximise mean quality)
+Finds the single parameter set with the highest mean quality across all files.
+Use this to pick one best set of UniDec processing conditions.
 
 ```bash
 python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results
@@ -41,24 +54,19 @@ python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --quic
 ```
 
 ### Per-file — optimise each file independently (`--per-file`)
-Optimises parameters separately for every `.raw` file. Because cross-replicate
-%CV is undefined once each file uses different parameters, files are scored by
-a **ratio-independent peak-fit quality** metric:
-
-```
-quality = 0.5 * separation + 0.25 * (fitR2_A + fitR2_B)
-```
-
-- `separation` = `1 - valley/min(apexA, apexB)` — trough depth between the two
-  fitted peaks. This penalises over-smoothing that merges A and B (a false win).
-- `fitR2_A/B` = goodness of a local Gaussian+baseline fit to each peak.
-
-The metric never looks at the ratio value, so per-file tuning cannot bias the
-quantitation.
+Optimises parameters separately for every `.raw` file, each maximising that
+file's own peak-fit quality.
 
 ```bash
 python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --per-file
-python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --per-file --quick
+```
+
+### Legacy %CV objective (`--cv-mode`)
+The original objective — one shared set minimising cross-replicate %CV of the
+ratio. Retained but off by default.
+
+```bash
+python unidec_ratio_optimizer.py --data /path/to/raw_folder --out results --cv-mode
 ```
 
 ## What the sweep tunes (v3)
@@ -80,13 +88,18 @@ Fixed defaults (from `Params`): `massbins=0.1` Da, `mzbins=1.0` Th,
 
 ## Outputs
 
-**Global mode** → `sweep_results.csv`, `best_config.json`, `best_per_file.csv`,
+**Default quality mode** → `quality_sweep_results.csv` (all sets ranked by mean
+quality), `best_config.json`, `best_per_file.csv` (per-file ratio + quality for
+the winner), `quality_vs_ratio.png`.
+
+**`--per-file`** → `per_file_optimized.csv` (each file's own best params + ratio
++ quality), `best_config_per_file.json`, `per_file_sweep_full.csv` (full audit
+of every trial), `per_file_ratios.png`.
+
+**`--cv-mode`** → `sweep_results.csv`, `best_config.json`, `best_per_file.csv`,
 `ratio_vs_cv.png`.
 
-**Per-file mode** → `per_file_optimized.csv` (each file's own best params +
-ratio + quality), `best_config_per_file.json`, `per_file_sweep_full.csv` (full
-audit of every trial), `per_file_ratios.png`.
-
 ⚠ Always visually inspect the winning mass spectrum — confirm A and B are
-cleanly separated. In per-file mode, ratios come from different parameter sets,
-so cross-check against the global-mode result before trusting them.
+cleanly separated. In `--per-file` mode, ratios come from different parameter
+sets, so cross-check against the default (shared-conditions) result before
+trusting them.
