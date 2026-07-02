@@ -110,6 +110,20 @@ Fixed defaults (from `Params`): `massbins=0.1` Da, `mzbins=1.0` Th,
 `subtype=1` (curved), m/z window `700–2000`. Background subtraction defaults to
 **Subtract Curved** with a realistic width, so curved is actually tested.
 
+## Performance
+
+The raw-spectrum load (`open_file`) is parameter-independent, so each `.raw` is
+opened **once** and the loaded engine is reused across the whole grid; only
+`process_data()`/`run_unidec()` — which depend on the swept parameters — re-run
+per grid point. This removes redundant file I/O but does **not** make the sweep
+"instant": the deconvolution itself is the swept quantity and runs once per grid
+point (729 in the full grid, per file). Pass `--fresh-engine` to open a new
+engine every call (slower; only for ruling out engine state carry-over).
+
+> If you want a genuinely cache-once, integrate-in-memory sweep, that is the
+> `mz_ratio_direct.py` model — it integrates the RAW spectrum directly, so the
+> only per-parameter cost is cheap integration. It skips deconvolution entirely.
+
 ## Outputs
 
 The output directory gets a `_YYYYmmdd_HHMMSS` timestamp appended automatically

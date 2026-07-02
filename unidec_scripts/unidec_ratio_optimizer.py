@@ -400,35 +400,65 @@ def peak_quality(mass, inten, p: Params, verbose: bool = False):
     return dict(scoreQ=score, sep=sep, r2A=r2A_c, r2B=r2B_c)
 
 
-def deconvolve_one(path: str, p: Params, verbose: bool = False,
-                   workdir: str | None = None):
-    """
-    Open one .raw file, apply params, run UniDec, return
-    (mass, intensity, ratio, aA, aB, baseline, r_squared).
-    """
-    import io, contextlib, shutil, tempfile
+# Per-file engine cache. The RAW spectrum load (copy .raw + open_file) is
+# parameter-INDEPENDENT, so we open each file exactly once and reuse the loaded
+# engine across the whole parameter grid. Only process_data()/run_unidec() --
+# which DO depend on the swept parameters -- are re-run per grid point.
+_ENGINE_CACHE: dict[str, tuple] = {}   # path -> (engine, tmpdir)
 
-    own_tmpdir = workdir is None
-    if own_tmpdir:
-        tmpdir = tempfile.mkdtemp(prefix="unidec_opt_")
+
+def _open_engine(path: str, verbose: bool):
+    """Copy .raw to an isolated temp dir and open it once. Returns (u, tmpdir)."""
+    import io, contextlib, shutil, tempfile
+    tmpdir = tempfile.mkdtemp(prefix="unidec_opt_")
+    tmp_path = os.path.join(tmpdir, os.path.basename(path))
+    shutil.copy2(path, tmp_path)
+    u = make_engine()
+    u.silent = not verbose
+    if not verbose:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            u.open_file(tmp_path)
     else:
-        tmpdir = workdir
-        os.makedirs(tmpdir, exist_ok=True)
+        u.open_file(tmp_path)
+    return u, tmpdir
+
+
+def cleanup_engines():
+    """Tear down all cached engines and their temp dirs (call at end of run)."""
+    import shutil
+    for _u, tmpdir in _ENGINE_CACHE.values():
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    _ENGINE_CACHE.clear()
+
+
+def deconvolve_one(path: str, p: Params, verbose: bool = False,
+                   reuse: bool = True):
+    """
+    Deconvolve one .raw file with parameter set `p`; return
+    (mass, intensity, ratio, aA, aB, baseline, r_squared).
+
+    If `reuse` (default), the file is opened once and the loaded engine is
+    cached and reused for every subsequent parameter set on the same file --
+    the raw load is parameter-independent, so this avoids re-reading the file
+    729× per grid. Pass reuse=False (--fresh-engine) to open a throwaway engine
+    per call, which exactly reproduces the previous behaviour.
+    """
+    import io, contextlib, shutil
+
+    own_tmpdir = None
+    if reuse:
+        if path not in _ENGINE_CACHE:
+            _ENGINE_CACHE[path] = _open_engine(path, verbose)
+        u, _tmpdir = _ENGINE_CACHE[path]
+    else:
+        u, own_tmpdir = _open_engine(path, verbose)
 
     try:
-        fname    = os.path.basename(path)
-        tmp_path = os.path.join(tmpdir, fname)
-        if not os.path.exists(tmp_path):
-            shutil.copy2(path, tmp_path)
-
-        u = make_engine()
-        u.silent = not verbose
-
         def _run():
-            u.open_file(tmp_path)
             apply_params(u.config, p)
-            u.process_data()
-            u.run_unidec()
+            u.process_data()    # re-derives processed data from cached rawdata
+            u.run_unidec()      # the parameter-dependent deconvolution
 
         if not verbose:
             buf = io.StringIO()
@@ -449,8 +479,8 @@ def deconvolve_one(path: str, p: Params, verbose: bool = False,
         return mass, inten, ratio, aA, aB, bl, r2
 
     finally:
-        if own_tmpdir:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        if own_tmpdir is not None:
+            shutil.rmtree(own_tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +551,8 @@ def evaluate(p: Params, files: list[str], args) -> dict | None:
     for path in files:
         fname = os.path.basename(path)
         try:
-            _, _, ratio, aA, aB, bl, r2 = deconvolve_one(path, p, args.verbose)
+            _, _, ratio, aA, aB, bl, r2 = deconvolve_one(
+                path, p, args.verbose, reuse=not args.fresh_engine)
             ratios.append(ratio)
             r2s.append(r2)
             per_file.append((fname, ratio, aA, aB, bl, r2))
@@ -594,7 +625,8 @@ def optimise(files: list[str], args):
 def evaluate_per_file(p: Params, path: str, args) -> dict | None:
     """Deconvolve ONE file with ONE param set; return ratio + quality, or None."""
     try:
-        mass, inten, ratio, aA, aB, bl, r2 = deconvolve_one(path, p, args.verbose)
+        mass, inten, ratio, aA, aB, bl, r2 = deconvolve_one(
+            path, p, args.verbose, reuse=not args.fresh_engine)
     except Exception as exc:
         if args.verbose:
             print(f"    [WARN] {os.path.basename(path)}: {exc}")
@@ -1244,6 +1276,11 @@ def parse_args(argv=None):
     ap.add_argument("--no-timestamp", action="store_true", dest="no_timestamp",
                     help="Do NOT append a timestamp to --out (may overwrite "
                          "a previous run).")
+    ap.add_argument("--fresh-engine", action="store_true", dest="fresh_engine",
+                    help="Open a new UniDec engine for every parameter set "
+                         "instead of loading each .raw once and reusing it "
+                         "across the grid. Slower; use only to rule out engine "
+                         "state carry-over.")
     ap.add_argument("--per-file", action="store_true", dest="per_file",
                     help="Optimise parameters SEPARATELY for each file, each "
                          "maximising that file's own peak-fit quality "
@@ -1317,22 +1354,29 @@ def main(argv=None):
         print(f"  {os.path.basename(f)}")
     print()
 
-    if args.by_concentration:
-        winners = optimise_by_concentration(files, args)
-        paths = write_outputs_by_concentration(winners, args)
-        print_report_by_concentration(winners)
-    elif args.cv_mode:
-        rows, winner, basis = optimise(files, args)
-        paths = write_outputs(rows, winner, basis, args)
-        print_report(winner, basis)
-    elif args.per_file:
-        winners, full_records = optimise_per_file(files, args)
-        paths = write_outputs_per_file(winners, full_records, args)
-        print_report_per_file(winners)
-    else:
-        rows, winner, basis = optimise_global_quality(files, args)
-        paths = write_outputs_quality(rows, winner, basis, args)
-        print_report_quality(winner, basis)
+    if not args.fresh_engine:
+        print("Engine reuse: each .raw is loaded once and reused across the "
+              "grid (use --fresh-engine to disable).\n")
+
+    try:
+        if args.by_concentration:
+            winners = optimise_by_concentration(files, args)
+            paths = write_outputs_by_concentration(winners, args)
+            print_report_by_concentration(winners)
+        elif args.cv_mode:
+            rows, winner, basis = optimise(files, args)
+            paths = write_outputs(rows, winner, basis, args)
+            print_report(winner, basis)
+        elif args.per_file:
+            winners, full_records = optimise_per_file(files, args)
+            paths = write_outputs_per_file(winners, full_records, args)
+            print_report_per_file(winners)
+        else:
+            rows, winner, basis = optimise_global_quality(files, args)
+            paths = write_outputs_quality(rows, winner, basis, args)
+            print_report_quality(winner, basis)
+    finally:
+        cleanup_engines()
 
     print(f"\nOutputs written to {args.out}\\")
     for pth in paths:
