@@ -96,14 +96,18 @@ exposes, over higher ranges than before:
 
 | App label            | Config attr | Swept values (full) |
 |----------------------|-------------|---------------------|
-| Peak FWHM            | `mzsig`     | 0.4, 0.6, 1.0 |
-| Charge Smooth Width  | `zzsig`     | 1.0, 2.0, 4.0 |
+| Peak FWHM            | `mzsig`     | 0.3, 0.4, 0.5 |
+| Charge Smooth Width  | `zzsig`     | 1.0, 5.0, 10.0 |
 | Point Smooth Width   | `psig`      | 0.0, 1.0, 2.0 |
 | Beta                 | `beta`      | 0.0, 50.0, 100.0 |
+| Gaussian Smoothing   | `smooth`    | 1.0, 2.0, 5.0 |
 | Subtract Curved width| `subbuff`   | 50, 100, 150 |
 
+Full grid = 3×3×3×3×3×3 = **729** parameter sets. `--quick` = 2×2×2×2×2×1 =
+**32** sets.
+
 Fixed defaults (from `Params`): `massbins=0.1` Da, `mzbins=1.0` Th,
-`smooth=2.0`, `subtype=1` (curved). Background subtraction now defaults to
+`subtype=1` (curved), m/z window `700–2000`. Background subtraction defaults to
 **Subtract Curved** with a realistic width, so curved is actually tested.
 
 ## Outputs

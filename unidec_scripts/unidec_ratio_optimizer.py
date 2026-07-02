@@ -130,8 +130,8 @@ def make_engine():
 @dataclass
 class Params:
     # --- m/z input window (covers z=10..40 for ~23.5 kDa with headroom) ---
-    minmz: float = 600.0
-    maxmz: float = 2500.0
+    minmz: float = 700.0
+    maxmz: float = 2000.0
 
     # --- mass output grid: bracket both species tightly ---
     masslb: float = 22500.0
@@ -460,28 +460,29 @@ def build_grid(args) -> list[Params]:
     """
     Construct the sweep grid.
 
-    The sweep now focuses on the three deconvolution priors the app exposes as
-    Beta, Charge Smooth Width, and Point Smooth Width, over ranges HIGHER than
-    v2 (which landed on values that were too low), plus peak width and the
-    curved-subtraction width. Background subtraction is fixed to CURVED
-    (subtype=1) via Params default, with subbuff swept around the app's ~100
-    default. massbins / mzbins / smooth are taken from the Params defaults
-    (0.1 Da / 1.0 Th / 2.0) rather than swept.
+    The sweep covers peak width (mzsig), the deconvolution priors the app calls
+    Charge Smooth Width (zzsig), Point Smooth Width (psig) and Beta, Gaussian
+    smoothing (smooth), and the curved-subtraction width (subbuff). Background
+    subtraction is fixed to CURVED (subtype=1) via Params default. massbins and
+    mzbins are taken from the Params defaults (0.1 Da / 1.0 Th) rather than
+    swept.
     """
     if args.quick:
         grid = dict(
-            mzsig   = [0.6, 1.0],
-            zzsig   = [1.0, 2.0],     # charge smooth width
+            mzsig   = [0.3, 0.5],
+            zzsig   = [1.0, 10.0],    # charge smooth width
             psig    = [0.0, 1.0],     # point smooth width
             beta    = [0.0, 50.0],    # softmax charge focusing
+            smooth  = [1.0, 2.0],     # Gaussian smoothing
             subbuff = [100.0],        # curved-subtraction width
         )
     else:
         grid = dict(
-            mzsig   = [0.4, 0.6, 1.0],
-            zzsig   = [1.0, 2.0, 4.0],        # charge smooth width (higher)
+            mzsig   = [0.3, 0.4, 0.5],
+            zzsig   = [1.0, 5.0, 10.0],       # charge smooth width
             psig    = [0.0, 1.0, 2.0],        # point smooth width
-            beta    = [0.0, 50.0, 100.0],     # softmax charge focusing (higher)
+            beta    = [0.0, 50.0, 100.0],     # softmax charge focusing
+            smooth  = [1.0, 2.0, 5.0],        # Gaussian smoothing
             subbuff = [50.0, 100.0, 150.0],   # curved-subtraction width
         )
 
@@ -1265,8 +1266,8 @@ def parse_args(argv=None):
                     default="window", dest="integration_mode",
                     help="How the mass spectrum is turned into a ratio.")
     ap.add_argument("--zrange",      type=int, nargs=2, default=(8, 45))
-    ap.add_argument("--minmz",       type=float, default=600.0)
-    ap.add_argument("--maxmz",       type=float, default=2500.0)
+    ap.add_argument("--minmz",       type=float, default=700.0)
+    ap.add_argument("--maxmz",       type=float, default=2000.0)
     ap.add_argument("--mass-pad",    type=float, default=910.0, dest="mass_pad",
                     help="Da of headroom beyond each centroid for masslb/massub")
     ap.add_argument("--lam",         type=float, default=1.0,
