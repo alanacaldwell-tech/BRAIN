@@ -189,8 +189,8 @@ class Params:
     int_hi_B:  float = 23900.0
 
     # --- gaussian-mode + quality-metric settings ---
-    centroidA_expected: float = 23412.0
-    centroidB_expected: float = 23658.0
+    centroidA_expected: float = 23411.8   # test antibody light chain (Da)
+    centroidB_expected: float = 23658.7   # internal-standard light chain (Da)
     peak_half_window:   float = 20.0   # Da; narrow window around each centroid
 
     def key_str(self):
@@ -1298,8 +1298,10 @@ def parse_args(argv=None):
     ap.add_argument("--conc-pattern", default=None, dest="conc_pattern",
                     help="Regex for the concentration token (default matches "
                          r"forms like '1p00e-4'/'2e-4').")
-    ap.add_argument("--centroidA",   type=float, default=23412.0)
-    ap.add_argument("--centroidB",   type=float, default=23658.0)
+    ap.add_argument("--centroidA",   type=float, default=23411.8,
+                    help="Test antibody light-chain mass (Da). Ratio is A/B.")
+    ap.add_argument("--centroidB",   type=float, default=23658.7,
+                    help="Internal-standard light-chain mass (Da).")
     ap.add_argument("--target-ratio",type=float, default=3.0, dest="target_ratio")
     ap.add_argument("--ratio-band",  type=float, nargs=2,
                     default=(1.8, 4.5), dest="ratio_band",
