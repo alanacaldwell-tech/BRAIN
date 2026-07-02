@@ -112,9 +112,17 @@ Fixed defaults (from `Params`): `massbins=0.1` Da, `mzbins=1.0` Th,
 
 ## Outputs
 
+The output directory gets a `_YYYYmmdd_HHMMSS` timestamp appended automatically
+(e.g. `results_20260702_182910`) so repeat runs never overwrite each other.
+Pass `--no-timestamp` to disable that.
+
+Every mode except `--per-file` writes a `cv_percent` column (a single file has
+no cross-replicate CV, so `--per-file` has none). In default quality mode the
+`cv_percent` is descriptive — reported, not the optimisation target.
+
 **Default quality mode** → `quality_sweep_results.csv` (all sets ranked by mean
-quality), `best_config.json`, `best_per_file.csv` (per-file ratio + quality for
-the winner), `quality_vs_ratio.png`.
+quality, with a `cv_percent` column), `best_config.json`, `best_per_file.csv`
+(per-file ratio + quality for the winner), `quality_vs_ratio.png`.
 
 **`--per-file`** → `per_file_optimized.csv` (each file's own best params + ratio
 + quality), `best_config_per_file.json`, `per_file_sweep_full.csv` (full audit

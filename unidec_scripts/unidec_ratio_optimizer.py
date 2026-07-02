@@ -83,6 +83,7 @@ OUTPUTS (--cv-mode)
 from __future__ import annotations
 import argparse, csv, itertools, json, os, re, sys, traceback, warnings
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 import numpy as np
 
 warnings.filterwarnings("ignore")   # suppress unidec's mpld3 / psims noise
@@ -967,7 +968,7 @@ def write_outputs_quality(rows, winner, basis, args):
     with open(sweep_path, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["rank","mean_quality","min_quality","mean_ratio",
-                    "descriptive_cv_percent","n_good"] + _PARAM_COLS)
+                    "cv_percent","n_good"] + _PARAM_COLS)
         for rank, (p, r) in enumerate(rows, 1):
             w.writerow([rank, f"{r['mean_quality']:.4f}", f"{r['min_quality']:.4f}",
                         f"{r['mean_ratio']:.4f}", f"{r['desc_cv']:.3f}",
@@ -1237,7 +1238,12 @@ def parse_args(argv=None):
                     "of two close protein species, globally or per-file.")
     ap.add_argument("--data",  required=True,
                     help="Folder containing replicate .raw files")
-    ap.add_argument("--out",   default="unidec_ratio_results")
+    ap.add_argument("--out",   default="unidec_ratio_results",
+                    help="Output directory base name. A _YYYYmmdd_HHMMSS "
+                         "timestamp is appended unless --no-timestamp is set.")
+    ap.add_argument("--no-timestamp", action="store_true", dest="no_timestamp",
+                    help="Do NOT append a timestamp to --out (may overwrite "
+                         "a previous run).")
     ap.add_argument("--per-file", action="store_true", dest="per_file",
                     help="Optimise parameters SEPARATELY for each file, each "
                          "maximising that file's own peak-fit quality "
@@ -1298,6 +1304,13 @@ def list_files(data_dir):
 
 def main(argv=None):
     args = parse_args(argv)
+
+    # Timestamp the output directory so repeat runs don't overwrite each other.
+    if not args.no_timestamp:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.out = f"{args.out.rstrip('/' + chr(92))}_{ts}"
+    print(f"Output directory: {args.out}\n")
+
     files = list_files(args.data)
     print(f"Found {len(files)} replicate spectra.")
     for f in files:
