@@ -28,12 +28,19 @@ what you run on future single-sample-per-concentration data.
 
 ```bash
 # from the tuned-conditions CSV (geometry filled from the CLI defaults):
-python unidec_batch_apply.py --config results_.../shared_conditions.csv \
-    --data /path/to/raw --out applied
+python unidec_batch_apply.py --config results_.../shared_conditions.csv --data /path/to/raw --out applied
 
 # exact reproduction from the full JSON (geometry included, no CLI needed):
-python unidec_batch_apply.py --config results_.../best_config_shared.json \
-    --data /path/to/raw --out applied
+python unidec_batch_apply.py --config results_.../best_config_shared.json --data /path/to/raw --out applied
+```
+
+**Windows:** run the command on ONE line and wrap any path containing spaces in
+double quotes. Do not use `\` to continue lines (that is Unix syntax; on Windows
+the `\` is passed as a literal argument). Also avoid a trailing backslash just
+before a closing quote (`"...\Test\"` escapes the quote):
+
+```bat
+python unidec_scripts\unidec_batch_apply.py --config "C:\path\shared_conditions.csv" --data "\\Server\Share\20260701 My Run\Test" --out applied
 ```
 
 `shared_conditions.csv` stores the *tuned* parameters only; the geometry
