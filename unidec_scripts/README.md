@@ -18,6 +18,36 @@ pip install unidec numpy matplotlib scipy
 `scipy` is required for the Gaussian peak-fit paths (`--integration-mode gaussian`
 and the per-file quality metric).
 
+## `unidec_batch_apply.py` — apply fixed conditions (production step)
+
+Once the optimiser has found reproducible conditions, use this to **apply** them
+to data — no searching. It reads a `shared_conditions.csv` (or the full
+`best_config_shared.json`) from an optimiser run and deconvolves every `.raw`
+file with those exact parameters, reporting the test/IS ratio per file. This is
+what you run on future single-sample-per-concentration data.
+
+```bash
+# from the tuned-conditions CSV (geometry filled from the CLI defaults):
+python unidec_batch_apply.py --config results_.../shared_conditions.csv \
+    --data /path/to/raw --out applied
+
+# exact reproduction from the full JSON (geometry included, no CLI needed):
+python unidec_batch_apply.py --config results_.../best_config_shared.json \
+    --data /path/to/raw --out applied
+```
+
+`shared_conditions.csv` stores the *tuned* parameters only; the geometry
+(centroids, m/z window, mass bounds, charge range) is not swept and is taken
+from the same CLI defaults as the optimiser — pass the same
+`--centroidA/--centroidB/--minmz/--maxmz/--zrange` if you changed them. The JSON
+config stores the complete parameter set, so it needs no geometry flags.
+
+Outputs: `batch_per_file.csv` (ratio + peak quality per file),
+`batch_by_concentration.csv` (mean/SD/%CV per concentration, if filenames carry
+tokens), `batch_summary.txt` (conditions used + calibration slope/intercept/R²),
+and `ratio_vs_concentration.png`. It reuses the deconvolution/ratio/quality code
+from `unidec_ratio_optimizer.py`, so results match the optimiser exactly.
+
 ## `mz_ratio_direct.py` — model-free ratio (no deconvolution)
 
 Integrates the raw m/z signal directly, per charge state, in a safe zone
