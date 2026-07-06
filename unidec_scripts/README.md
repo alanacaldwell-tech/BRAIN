@@ -26,6 +26,20 @@ to data — no searching. It reads a `shared_conditions.csv` (or the full
 file with those exact parameters, reporting the test/IS ratio per file. This is
 what you run on future single-sample-per-concentration data.
 
+**Start-to-finish (.raw → ratio).** Each `.raw` is first **averaged over an
+elution-time window** (default `0.4–0.9 min`, matching the Xcalibur SampleStream
+workflow) into a single **profile** spectrum using UniDec 8.x's importer. That
+averaged spectrum is **both** saved to `averaged_spectra/<name>_avg.txt` (a
+two-column m/z+intensity file, re-importable into UniDec) **and** fed straight
+into the deconvolution — no manual Xcalibur export step.
+
+- `--time-lo` / `--time-hi` — the averaging window in minutes (default 0.4 / 0.9).
+- `--no-average` — skip averaging and feed files as-is (use when the spectra are
+  already averaged; requires no Thermo importer).
+
+Averaging needs UniDec 8.x (`unidec.UniDecImporter.ImporterFactory`); if it
+can't be imported, the script tells you to use `--no-average`.
+
 ```bash
 # from the tuned-conditions CSV (geometry filled from the CLI defaults):
 python unidec_batch_apply.py --config results_.../shared_conditions.csv --data /path/to/raw --out applied

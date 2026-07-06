@@ -11,6 +11,13 @@ This is the production step: once the optimiser has found reproducible
 conditions, use this to apply them to new data (including single samples per
 concentration).
 
+Start-to-finish: each .raw is first AVERAGED over an elution-time window
+(default 0.4-0.9 min, matching the Xcalibur workflow) into a single PROFILE
+spectrum via UniDec 8.x's importer; that averaged spectrum is BOTH saved (to
+averaged_spectra/<name>_avg.txt, a two-column m/z+intensity file re-importable
+into UniDec) AND fed straight into the deconvolution. Use --no-average to skip
+averaging when the input spectra are already averaged.
+
 Reuses the deconvolution / ratio / quality / grouping code from
 unidec_ratio_optimizer.py so the two stay in lockstep.
 
@@ -127,6 +134,76 @@ def params_from_config(path, args):
 
 
 # ---------------------------------------------------------------------------
+# .raw scan averaging (UniDec 8.x importer -> averaged profile spectrum)
+# ---------------------------------------------------------------------------
+
+def load_importer_factory():
+    """Return UniDec 8.x ImporterFactory, or exit with guidance."""
+    try:
+        from unidec.UniDecImporter.ImporterFactory import ImporterFactory
+        return ImporterFactory
+    except Exception as e:
+        raise SystemExit(
+            "Could not import UniDec's ImporterFactory "
+            "(unidec.UniDecImporter.ImporterFactory) — this needs UniDec 8.x "
+            "(you reported 8.1.3). If the spectra are already averaged, run with "
+            f"--no-average to feed the files directly.\n(error: {e})")
+
+
+def average_raw(factory, path, t_lo, t_hi, verbose=False):
+    """
+    Average scans over retention-time window [t_lo, t_hi] (minutes) into one
+    PROFILE spectrum via UniDec's Thermo importer. Returns an Nx2 float array
+    (m/z, intensity). Falls back to averaging ALL scans if the window is empty.
+    """
+    import io, contextlib
+
+    imp = factory.create_importer(path)
+
+    def _avg(time_range):
+        fn = getattr(imp, "get_avg_scan", None) or getattr(imp, "get_data", None)
+        if fn is None:
+            raise RuntimeError("importer has no get_avg_scan/get_data method")
+        try:
+            d = fn(time_range=time_range) if time_range is not None else fn()
+        except TypeError:
+            # older signature: positional scan_range only -> whole file
+            d = fn()
+        return d
+
+    def _as2col(d):
+        if d is None:
+            return None
+        a = np.asarray(d, dtype=float)
+        if a.ndim == 2 and a.shape[0] == 2 and a.shape[1] != 2:
+            a = a.T                      # (2, N) -> (N, 2)
+        if a.ndim == 2 and a.shape[1] >= 2 and a.shape[0] >= 3:
+            return a[:, :2]
+        return None
+
+    try:
+        if verbose:
+            arr = _as2col(_avg([t_lo, t_hi]))
+        else:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                arr = _as2col(_avg([t_lo, t_hi]))
+    except Exception:
+        arr = None
+
+    if arr is None:   # window empty / API quirk -> average the whole file
+        if verbose:
+            print(f"      [avg] window [{t_lo},{t_hi}] empty; averaging all scans")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            arr = _as2col(_avg(None))
+
+    if arr is None:
+        raise RuntimeError("could not obtain an averaged spectrum from importer")
+    return arr
+
+
+# ---------------------------------------------------------------------------
 # Batch run
 # ---------------------------------------------------------------------------
 
@@ -144,17 +221,31 @@ def process_file(path, p, args):
     )
 
 
-def run(files, p, args):
-    results = []   # (fname, conc_token, res_or_None)
+def run(files, p, factory, args):
+    results = []   # (fname, conc_token, res_or_None, avg_path_or_None)
+    avg_dir = os.path.join(args.out, "averaged_spectra")
+    if factory is not None:
+        os.makedirs(avg_dir, exist_ok=True)
+
     for path in files:
         fname = os.path.basename(path)
         conc  = opt.parse_concentration(fname)
+        avg_path = None
         try:
-            res = process_file(path, p, args)
-            results.append((fname, conc, res))
-            print(f"  {fname:<44} ratio={res['ratio']:.4f}  Q={res['quality']:.3f}")
+            target = path
+            # Average .raw over the elution window, save it, and feed it forward.
+            if factory is not None and path.lower().endswith(".raw"):
+                arr = average_raw(factory, path, args.time_lo, args.time_hi, args.verbose)
+                stem = os.path.splitext(fname)[0]
+                avg_path = os.path.join(avg_dir, stem + "_avg.txt")
+                np.savetxt(avg_path, arr, fmt="%.6f")
+                target = avg_path
+            res = process_file(target, p, args)
+            results.append((fname, conc, res, avg_path))
+            tag = "  (avg)" if avg_path else ""
+            print(f"  {fname:<44} ratio={res['ratio']:.4f}  Q={res['quality']:.3f}{tag}")
         except Exception as exc:
-            results.append((fname, conc, None))
+            results.append((fname, conc, None, avg_path))
             print(f"  [FAIL] {fname}: {exc}")
             if args.verbose:
                 import traceback; traceback.print_exc()
@@ -175,22 +266,24 @@ def write_outputs(results, p, source, args):
         w = csv.writer(fh)
         w.writerow(["file", "concentration", "conc_value", "ratio_A_over_B",
                     "area_A", "area_B", "quality", "separation",
-                    "fitR2_A", "fitR2_B", "baseline", "unidec_r2", "status"])
-        for fname, conc, res in results:
+                    "fitR2_A", "fitR2_B", "baseline", "unidec_r2",
+                    "averaged_spectrum", "status"])
+        for fname, conc, res, avgp in results:
             cv = opt.conc_to_float(conc) if conc else None
+            avg_name = os.path.basename(avgp) if avgp else "NA"
             if res is None:
                 w.writerow([fname, conc or "NA", fmt(cv), "NA","NA","NA","NA",
-                            "NA","NA","NA","NA","NA", "FAILED"])
+                            "NA","NA","NA","NA","NA", avg_name, "FAILED"])
                 continue
             w.writerow([fname, conc or "NA", fmt(cv),
                         fmt(res["ratio"]), fmt(res["aA"]), fmt(res["aB"]),
                         fmt(res["quality"]), fmt(res["sep"]),
                         fmt(res["r2A"]), fmt(res["r2B"]),
-                        fmt(res["bl"]), fmt(res["r2"]), "ok"])
+                        fmt(res["bl"]), fmt(res["r2"]), avg_name, "ok"])
 
     # Per-concentration (if any tokens present)
     grouped = {}
-    for fname, conc, res in results:
+    for fname, conc, res, avgp in results:
         if conc and res is not None and np.isfinite(res["ratio"]) and res["ratio"] > 0:
             grouped.setdefault(conc, []).append(res)
 
@@ -220,7 +313,7 @@ def write_outputs(results, p, source, args):
 
     # Summary
     summary = os.path.join(args.out, "batch_summary.txt")
-    ok = [r for _, _, r in results if r is not None]
+    ok = [r for _, _, r, _ in results if r is not None]
     with open(summary, "w") as fh:
         fh.write("UniDec batch apply — fixed-condition processing\n")
         fh.write("=" * 52 + "\n")
@@ -291,6 +384,14 @@ def parse_args(argv=None):
     ap.add_argument("--no-timestamp", action="store_true", dest="no_timestamp")
     ap.add_argument("--fresh-engine", action="store_true", dest="fresh_engine",
                     help="Open a new engine per file instead of reusing one.")
+    # Scan averaging over the elution window (UniDec 8.x importer)
+    ap.add_argument("--time-lo", type=float, default=0.4, dest="time_lo",
+                    help="Start of elution window (minutes) to average (default 0.4).")
+    ap.add_argument("--time-hi", type=float, default=0.9, dest="time_hi",
+                    help="End of elution window (minutes) to average (default 0.9).")
+    ap.add_argument("--no-average", action="store_true", dest="no_average",
+                    help="Do NOT average .raw over the window; feed files as-is "
+                         "(use if the spectra are already averaged).")
     # Geometry (only used when --config is a CSV; must match what you optimised)
     ap.add_argument("--centroidA", type=float, default=23412.0,
                     help="Test light-chain mass (Da). Ratio is A/B.")
@@ -314,24 +415,33 @@ def main(argv=None):
     p, source = params_from_config(args.config, args)
     files = opt.list_files(args.data)
 
+    factory = None if args.no_average else load_importer_factory()
+
     print(f"Conditions: {source}")
     print(f"  massbins={p.massbins} mzsig={p.mzsig} zzsig={p.zzsig} psig={p.psig} "
           f"beta={p.beta} sub={p.subtype}/{p.subbuff} smooth={p.smooth} "
           f"int={p.integration_mode}")
+    if factory is not None:
+        print(f"  averaging .raw over elution window {args.time_lo}-{args.time_hi} min "
+              f"(profile); averaged spectra saved to averaged_spectra/")
+    else:
+        print("  averaging OFF (--no-average): files fed to UniDec as-is")
     print(f"Output directory: {args.out}")
     print(f"Processing {len(files)} file(s)"
           + ("" if args.fresh_engine else "  (engine reuse on)") + "\n")
 
     try:
-        results = run(files, p, args)
+        results = run(files, p, factory, args)
     finally:
         opt.cleanup_engines()
 
     perfile, byconc, summary, plot = write_outputs(results, p, source, args)
 
-    ok = sum(1 for _, _, r in results if r is not None)
+    ok = sum(1 for _, _, r, _ in results if r is not None)
     print(f"\nDone: {ok}/{len(results)} files processed.")
     print(f"Outputs in {args.out}\\")
+    if factory is not None:
+        print(f"  averaged_spectra/  ({ok} averaged spectra)")
     for pth in (perfile, byconc, summary, plot):
         if pth:
             print(f"  {os.path.basename(pth)}")
