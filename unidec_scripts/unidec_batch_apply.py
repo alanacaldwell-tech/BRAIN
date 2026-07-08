@@ -378,9 +378,10 @@ def parse_args(argv=None):
     ap.add_argument("--config", required=True,
                     help="shared_conditions.csv or best_config_shared.json")
     ap.add_argument("--data", required=True, help="Folder of .raw files")
-    ap.add_argument("--out", default="unidec_batch_results",
-                    help="Output directory base name (timestamp appended "
-                         "unless --no-timestamp).")
+    ap.add_argument("--out", default=None,
+                    help="Output directory. Default: a timestamped folder "
+                         "INSIDE the --data directory. A _YYYYmmdd_HHMMSS "
+                         "timestamp is appended unless --no-timestamp.")
     ap.add_argument("--no-timestamp", action="store_true", dest="no_timestamp")
     ap.add_argument("--fresh-engine", action="store_true", dest="fresh_engine",
                     help="Open a new engine per file instead of reusing one.")
@@ -408,6 +409,9 @@ def parse_args(argv=None):
 def main(argv=None):
     from datetime import datetime
     args = parse_args(argv)
+    # Default the output into the input (--data) directory unless --out is given.
+    if args.out is None:
+        args.out = os.path.join(args.data, "unidec_batch_results")
     if not args.no_timestamp:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.out = f"{args.out.rstrip('/' + chr(92))}_{ts}"

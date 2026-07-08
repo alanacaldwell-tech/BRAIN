@@ -57,6 +57,11 @@ before a closing quote (`"...\Test\"` escapes the quote):
 python unidec_scripts\unidec_batch_apply.py --config "C:\path\shared_conditions.csv" --data "\\Server\Share\20260701 My Run\Test" --out applied
 ```
 
+If you omit `--out`, results are written to a timestamped folder **inside the
+`--data` directory** (e.g. `<data>\unidec_batch_results_20260702_...`), so each
+dataset's results sit next to its `.raw` files. Pass `--out` to send them
+elsewhere (needed if the data directory is read-only).
+
 `shared_conditions.csv` stores the *tuned* parameters only; the geometry
 (centroids, m/z window, mass bounds, charge range) is not swept and is taken
 from the same CLI defaults as the optimiser — pass the same
