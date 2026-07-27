@@ -415,6 +415,7 @@ def main(argv=None):
     if not args.no_timestamp:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.out = f"{args.out.rstrip('/' + chr(92))}_{ts}"
+    args.out = os.path.abspath(args.out)   # always show/use the full path
 
     p, source = params_from_config(args.config, args)
     files = opt.list_files(args.data)

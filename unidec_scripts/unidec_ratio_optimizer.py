@@ -1591,6 +1591,7 @@ def main(argv=None):
     if not args.no_timestamp:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.out = f"{args.out.rstrip('/' + chr(92))}_{ts}"
+    args.out = os.path.abspath(args.out)   # always show/use the full path
     print(f"Output directory: {args.out}\n")
 
     files = list_files(args.data)
